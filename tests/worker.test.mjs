@@ -34,7 +34,7 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await call('/api/state', 'PUT', { state, version: 0 }, first)).status, 409);
     const changed = { ...state, goal: 'bright', completed: [{ lesson: 'test', activity: 'w1d1-1', date: '2026-10-04' }], attempts: [{ id: 'test-attempt', date: '2026-10-04T12:00:00Z', lessonTitle: 'Practice', overall: 70, scores: { pitch: 70, brightness: 60, movement: 80, ease: 90 } }] };
     assert.equal((await call('/api/state', 'PUT', { state: changed, version: 1 }, first)).status, 200);
-    assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: changed, version: 2 });
+    assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: { ...changed, driveLog: [] }, version: 2 });
     assert.equal((await call('/api/state', 'PUT', { state, version: 1 }, first)).status, 409);
     assert.equal((await call('/api/state', 'PUT', { state: { ...state, attempts: [{}] }, version: 2 }, first)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...state, voice: '<script>' }, version: 2 }, first)).status, 400);
@@ -46,10 +46,17 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     const login = await call('/api/auth/login', 'POST', credentials);
     assert.equal(login.status, 200);
     const signedIn = login.headers.get('Set-Cookie').split(';')[0];
-    assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state, changed);
+    assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state, { ...changed, driveLog: [] });
     const ramonaState = { ...changed, goal: 'ramona' };
     assert.equal((await call('/api/state', 'PUT', { state: ramonaState, version: 2 }, signedIn)).status, 200);
     assert.equal((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.goal, 'ramona');
+    const driveEntry = { id: 'drive-1', date: '2026-10-04T12:00:00Z', routineId: 'week-2', plannedMinutes: 30, actualMinutes: 30, comfort: 4, cueHeld: 'partly' };
+    const driveState = { ...ramonaState, driveLog: [driveEntry] };
+    assert.equal((await call('/api/state', 'PUT', { state: driveState, version: 3 }, signedIn)).status, 200);
+    assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog, [driveEntry]);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: [{ ...driveEntry, actualMinutes: 15 }] }, version: 4 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: [{ ...driveEntry, cueHeld: 'maybe' }] }, version: 4 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: Array.from({ length: 501 }, (_, index) => ({ ...driveEntry, id: `drive-${index}` })) }, version: 4 }, signedIn)).status, 400);
     assert.equal((await call('/api/auth/logout', 'POST', {}, signedIn)).status, 200);
     assert.equal((await call('/api/state', 'GET', undefined, signedIn)).status, 401);
     const hash = signedIn.split('=')[1];

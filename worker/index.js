@@ -98,7 +98,22 @@ function validateState(state) {
         !['pitch', 'brightness', 'movement', 'ease'].every(key => Number.isFinite(attempt.scores[key]))) throw new HttpError(400, 'Invalid attempt.');
   }
   for (const item of state.completed) if (!item || typeof item.lesson !== 'string' || typeof item.date !== 'string') throw new HttpError(400, 'Invalid completion.');
-  return { goal: state.goal, attempts: state.attempts, completed: state.completed, saveAudio: state.saveAudio, rate: state.rate, voice: state.voice, sessionStarted: state.sessionStarted };
+  return { goal: state.goal, attempts: state.attempts, completed: state.completed, saveAudio: state.saveAudio, rate: state.rate, voice: state.voice, sessionStarted: state.sessionStarted, driveLog: validateDriveLog(state.driveLog) };
+}
+
+function validateDriveLog(driveLog) {
+  if (driveLog == null) return [];
+  if (!Array.isArray(driveLog) || driveLog.length > 500) throw new HttpError(400, 'Invalid drive log.');
+  return driveLog.map(entry => {
+    if (!entry || typeof entry.id !== 'string' || entry.id.length > 80 ||
+        typeof entry.date !== 'string' || !Number.isFinite(Date.parse(entry.date)) ||
+        typeof entry.routineId !== 'string' || entry.routineId.length > 40 ||
+        ![20, 30, 40].includes(entry.plannedMinutes) ||
+        ![0, 20, 30, 40].includes(entry.actualMinutes) ||
+        !Number.isInteger(entry.comfort) || entry.comfort < 1 || entry.comfort > 5 ||
+        !['yes', 'partly', 'no'].includes(entry.cueHeld)) throw new HttpError(400, 'Invalid drive log.');
+    return { id: entry.id, date: entry.date, routineId: entry.routineId, plannedMinutes: entry.plannedMinutes, actualMinutes: entry.actualMinutes, comfort: entry.comfort, cueHeld: entry.cueHeld };
+  });
 }
 
 async function limit(db, key, maximum = 20) {

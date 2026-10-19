@@ -65,6 +65,10 @@ Pitch is estimated with normalized autocorrelation. “Brightness” compares av
 
 The curriculum follows the multidimensional approach described by the American Speech-Language-Hearing Association and UCSF Gender Affirming Health Program: pitch, resonance, intonation, vocal quality/weight, articulation, and functional communication are trained together. The in-app links point to public/open speech sources (Mozilla Common Voice and LibriVox) for permitted real-voice shadowing.
 
+## Drive practice
+
+Drive practice is a list you read while parked and then speak with Lilt closed. There is no prompt audio, timer, microphone, or score. Each course week has a 20-, 30-, or 40-minute routine made from lines already in the course; a longer list repeats those lines instead of adding new ones. After the course, the maintenance routine stays available. Do not use a straw, read, or play a clip while driving. Speak at any volume that stays comfortable, and stop for pain, burning, dizziness, or roughness. An optional check-in afterward logs minutes, comfort, and whether the cue held. That log counts toward the weekly minute ring and the streak. It does not complete a course activity.
+
 - <https://www.asha.org/practice-portal/professional-issues/gender-affirming-voice-and-communication/>
 - <https://transcare.ucsf.edu/guidelines/vocal-health>
 - <https://commonvoice.mozilla.org/en/datasets>

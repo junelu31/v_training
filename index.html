@@ -59,6 +59,19 @@
       .word-finding p { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
       .word-finding button { margin-top: 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; font-size: 10px; }
       .word-finding .finding-tag { border-radius: 20px; padding: 4px 7px; background: #f0e4db; color: #805449; font-size: 9px; }
+      .drive-today { margin-top: 18px; }
+      .drive-today .secondary-button { margin-top: 14px; }
+      .drive-duration { display: flex; gap: 8px; flex-wrap: wrap; margin: 28px 0 8px; }
+      .drive-stack { display: grid; gap: 14px; margin-top: 16px; }
+      .drive-line { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.35); }
+      .drive-line b, .drive-line p { display: block; }
+      .drive-line p { margin: 6px 0 0; font: 500 16px Arial, sans-serif; line-height: 1.4; }
+      .drive-block p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+      .drive-block p b { color: var(--ink); font-size: 13px; }
+      .drive-check { display: grid; gap: 14px; margin-top: 16px; text-align: left; }
+      .drive-check label { font-size: 12px; }
+      .drive-check output { float: right; color: var(--muted); }
+      .drive-check input[type=range] { display: block; width: 100%; margin-top: 8px; accent-color: var(--coral); }
       @media(max-width:700px){.course-progress{grid-template-columns:1fr}.course-week{grid-template-columns:1fr}.week-number{padding:16px 22px}.session-row{grid-template-columns:48px 1fr 55px}.session-row small{display:none}.observation-grid{grid-template-columns:1fr}}
     </style>
   </head>
@@ -88,6 +101,7 @@
           <button class="nav-item active" data-view="today"><span>⌂</span>Today</button>
           <button class="nav-item" data-view="course"><span>◫</span>Course</button>
           <button class="nav-item" data-view="practice"><span>◉</span>Practice</button>
+          <button class="nav-item" data-view="drive"><span>▷</span>Drive</button>
           <button class="nav-item" data-view="library"><span>▤</span>Library</button>
           <button class="nav-item" data-view="progress"><span>↗</span>Progress</button>
         </nav>
@@ -136,6 +150,16 @@
           </div>
 
           <div class="lesson-path" id="lessonPath"></div>
+
+          <article class="insight-card drive-today">
+            <span class="card-icon">▷</span>
+            <div>
+              <span class="kicker">DRIVE PRACTICE · APP CLOSED</span>
+              <h3 id="driveTodayTitle">Ease on the road</h3>
+              <p id="driveTodayCopy">A list you memorize while parked, then speak from memory.</p>
+              <button class="secondary-button" id="openDrive" type="button">Review while parked</button>
+            </div>
+          </article>
 
           <div class="insight-grid">
             <article class="insight-card warm">
@@ -235,6 +259,53 @@
               <div id="scoreBreakdown"></div>
               <div class="transcript-box"><span class="kicker">HEARD AS</span><p id="transcriptText">A transcript will appear here when your browser provides one. Acoustic scoring does not depend on it.</p></div>
               <div class="word-findings" id="wordFindings" aria-live="polite"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="driveView">
+          <div class="eyebrow">PARKED REVIEW · THEN CLOSE LILT</div>
+          <h1 id="driveTitle">Ease on the road</h1>
+          <p class="lede">Read this while parked. Memorize the cue and three lines. The drive itself is spoken with the app closed: no screen, no prompt audio, and no timer.</p>
+          <div class="drive-duration" id="driveDurations" role="group" aria-label="List length"></div>
+          <p class="privacy-line" style="text-align:left">Longer lists repeat the same lines. They do not add new words.</p>
+          <div class="drive-stack">
+            <article class="settings-card">
+              <span class="kicker">ONE CUE TO REMEMBER</span>
+              <h2 id="driveCue"></h2>
+              <p id="driveCueNote"></p>
+            </article>
+            <div id="driveLines" class="drive-stack"></div>
+            <div id="driveBlocks" class="drive-stack"></div>
+            <article class="settings-card safety">
+              <span class="kicker">BEFORE YOU DRIVE</span>
+              <h2>Leave the phone alone</h2>
+              <p id="driveStop"></p>
+            </article>
+            <article class="settings-card">
+              <span class="kicker">AFTER THE DRIVE · OPTIONAL</span>
+              <h2>Log it when you are parked again</h2>
+              <p>This records that you practiced. It does not score your voice, upload audio, or complete a course activity.</p>
+              <div class="drive-check">
+                <label>Minutes you actually spoke
+                  <select id="driveActual" class="full-select">
+                    <option value="20">20</option>
+                    <option value="30" selected>30</option>
+                    <option value="40">40</option>
+                    <option value="0">Skipped — I did not practice</option>
+                  </select>
+                </label>
+                <label>Comfort <output id="driveComfortOutput">3 / 5</output><input id="driveComfort" type="range" min="1" max="5" value="3" /></label>
+                <label>Did the cue hold?
+                  <select id="driveCueHeld" class="full-select">
+                    <option value="yes">Yes</option>
+                    <option value="partly" selected>Partly</option>
+                    <option value="no">No</option>
+                  </select>
+                </label>
+                <button class="primary-button" id="saveDrive" type="button">Save check-in</button>
+                <p id="driveCheckinStatus" class="analysis-status" role="status" aria-live="polite"></p>
+              </div>
             </article>
           </div>
         </section>

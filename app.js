@@ -14,7 +14,7 @@ const presets = {
 const lessons = window.COURSE_CONTENT.drills;
 const courseWeeks = window.COURSE_CONTENT.weeks;
 
-const defaultState = { goal:'balanced', attempts:[], completed:[], saveAudio:false, rate:.88, voice:'', sessionStarted:null };
+const defaultState = { goal:'balanced', attempts:[], completed:[], saveAudio:false, rate:.88, voice:'', sessionStarted:null, driveLog:[] };
 let state = structuredClone(defaultState);
 let account = null, stateVersion = 0, syncQueue = Promise.resolve(), syncFailed = false;
 let authMode = 'login';
@@ -28,6 +28,7 @@ let recordingStartedAt = 0;
 let recordingDurationSeconds = 0;
 let recognitionStatus = { state:'idle', error:null };
 let recognitionDone = Promise.resolve();
+let driveMinutes = 30;
 
 function loadState(){ try { return {...defaultState, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')}; } catch { return {...defaultState}; } }
 function pendingKey(){ return `lilt.pending.${account.id}`; }
@@ -70,6 +71,7 @@ async function enterApp(user){
   state={...structuredClone(defaultState),...saved.state};stateVersion=saved.version;
   let pending;try{pending=JSON.parse(localStorage.getItem(pendingKey())||'null')}catch{}
   if(pending){state={...structuredClone(defaultState),...pending.state};stateVersion=pending.version}
+  if(!Array.isArray(state.driveLog))state.driveLog=[];
   init();el('accountEmail').textContent=account.email;
   el('authScreen').hidden=true;el('appShell').hidden=false;
   el('importLocal').hidden=!localStorage.getItem(STORAGE_KEY);
@@ -107,9 +109,16 @@ function sessionComplete(session){return session.activities.every(activity=>acti
 function currentCourseSession(){const sessions=allCourseSessions();return sessions.find(session=>!sessionComplete(session))||sessions.at(-1)}
 function courseProgress(){const sessions=allCourseSessions(),total=sessions.reduce((sum,s)=>sum+s.activities.length,0),done=sessions.reduce((sum,s)=>sum+s.activities.filter(a=>activityComplete(a.id)).length,0);return {sessions,total,done,percent:total?Math.round(done/total*100):0}}
 function activityContext(activityId){for(const session of allCourseSessions()){const index=session.activities.findIndex(a=>a.id===activityId);if(index>=0)return {session,index,activity:session.activities[index]}}return null}
+function driveLogs(){return Array.isArray(state.driveLog)?state.driveLog:[]}
+function currentDrive(){
+  const drives=window.COURSE_CONTENT.drives,progress=courseProgress();
+  if(progress.total&&progress.done>=progress.total)return drives.find(drive=>drive.week==='maintenance')||drives.at(-1);
+  return drives.find(drive=>drive.week===currentCourseSession().week)||drives[0];
+}
+function driveMinutesSince(since){return driveLogs().filter(entry=>new Date(entry.date).getTime()>=since).reduce((sum,entry)=>sum+(entry.actualMinutes||0),0)}
 
 function init(){
-  renderGoalOptions(); renderToday(); renderCourse(); renderLibrary('All'); renderProgress(); renderSettings(); bindEvents();
+  renderGoalOptions(); renderToday(); renderCourse(); renderLibrary('All'); renderProgress(); renderSettings(); renderDrive(); bindEvents();
   const now = new Date(); el('dateLabel').textContent = now.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}).toUpperCase();
   const hour = now.getHours(); el('timeGreeting').textContent = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
   updateGoalUI();
@@ -127,17 +136,19 @@ function renderToday(){
     const lesson=lessons.find(l=>l.id===activity.drill),done=activityComplete(activity.id),active=!done&&session.activities.slice(0,i).every(a=>activityComplete(a.id));
     return `<article class="lesson-card ${done?'complete':''} ${active?'active-card':''}"><span class="lesson-number">${String(i+1).padStart(2,'0')}</span><span class="status-icon">${done?'✓':active?'▶':'○'}</span><span class="kicker">${lesson.track}</span><h3>${lesson.title}</h3><p>${lesson.duration} · ${lesson.focus}</p><button data-lesson="${lesson.id}" data-activity="${activity.id}" aria-label="Start ${lesson.title}"></button></article>`;
   }).join('');
-  const recent = attemptsThisWeek(); const mins=Math.round(recent.reduce((s,a)=>s+(a.duration||0),0)/60);
+  const recent = attemptsThisWeek(); const driveMins=driveMinutesSince(Date.now()-7*864e5); const mins=Math.round(recent.reduce((s,a)=>s+(a.duration||0),0)/60)+driveMins;
   el('weekMinutes').textContent=mins; el('weeklyRing').style.background=`conic-gradient(var(--coral) ${clamp(mins/60*360,0,360)}deg,var(--paper-2) 0deg)`;
-  el('weeklySummary').textContent = recent.length ? `${recent.length} saved attempt${recent.length===1?'':'s'} · ${mins} min` : 'No sessions yet';
-  el('weeklyCopy').textContent = recent.length ? `${Math.round(recent.reduce((s,a)=>s+a.overall,0)/recent.length)} average score. Notice what feels easier before chasing higher numbers.` : 'Your first sample becomes your baseline. Progress is compared with you, not a population.';
+  el('weeklySummary').textContent = recent.length ? `${recent.length} saved attempt${recent.length===1?'':'s'} · ${mins} min` : driveMins ? `${driveMins} min from drives` : 'No sessions yet';
+  const scoreCopy = recent.length ? `${Math.round(recent.reduce((s,a)=>s+a.overall,0)/recent.length)} average score. Notice what feels easier before chasing higher numbers.` : 'Your first sample becomes your baseline. Progress is compared with you, not a population.';
+  el('weeklyCopy').textContent = driveMins ? `${scoreCopy} ${driveMins} minutes logged from drives this week.` : scoreCopy;
+  const drive=currentDrive(); el('driveTodayTitle').textContent=drive.title; el('driveTodayCopy').textContent=`${drive.cue} Review the list while parked, then speak it with Lilt closed.`;
   el('streakCount').textContent=calculateStreak();
   el('coachNoteTitle').textContent=session.objective;el('coachNoteCopy').textContent=`After this session, ask: ${session.reflection}`;
   document.querySelectorAll('#lessonPath [data-lesson]').forEach(b=>b.onclick=()=>startLesson(b.dataset.lesson,b.dataset.activity));
 }
 
 function attemptsThisWeek(){ const since=Date.now()-7*864e5; return state.attempts.filter(a=>new Date(a.date).getTime()>=since); }
-function calculateStreak(){ const days=new Set(state.attempts.map(a=>a.date.slice(0,10))); let n=0,d=new Date(); if(!days.has(todayKey(d))){d.setDate(d.getDate()-1)} while(days.has(todayKey(d))){n++;d.setDate(d.getDate()-1)} return n; }
+function calculateStreak(){ const days=new Set([...state.attempts.map(a=>a.date.slice(0,10)),...driveLogs().filter(entry=>entry.actualMinutes>0).map(entry=>entry.date.slice(0,10))]); let n=0,d=new Date(); if(!days.has(todayKey(d))){d.setDate(d.getDate()-1)} while(days.has(todayKey(d))){n++;d.setDate(d.getDate()-1)} return n; }
 
 function startLesson(id,activityId=null){
   activeLesson=lessons.find(l=>l.id===id)||lessons[0];
@@ -154,7 +165,7 @@ function showView(name){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active')); el(`${name}View`).classList.add('active');
   document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.classList.toggle('active',n.dataset.view===name));
   document.querySelector('.sidebar').classList.remove('open'); window.scrollTo({top:0,behavior:'smooth'});
-  if(name==='progress') renderProgress(); if(name==='today') renderToday(); if(name==='course')renderCourse();
+  if(name==='progress') renderProgress(); if(name==='today') renderToday(); if(name==='course')renderCourse(); if(name==='drive')renderDrive();
 }
 
 function renderCourse(){
@@ -175,6 +186,30 @@ function renderLibrary(filter){
   document.querySelectorAll('[data-library-lesson]').forEach(b=>b.onclick=()=>startLesson(b.dataset.libraryLesson));
 }
 
+function renderDrive(){
+  const drive=currentDrive();
+  el('driveTitle').textContent=drive.title; el('driveCue').textContent=drive.cue;
+  el('driveCueNote').textContent=drive.pickCue?'Choose that one cue now, while you can still look. On the road you will not come back to this screen.':'This is the only cue for the drive. On the road you will not come back to this screen.';
+  el('driveDurations').innerHTML=[20,30,40].map(min=>`<button type="button" class="filter-button ${min===driveMinutes?'active':''}" data-drive-minutes="${min}">${min} min</button>`).join('');
+  document.querySelectorAll('[data-drive-minutes]').forEach(button=>button.onclick=()=>{driveMinutes=+button.dataset.driveMinutes;renderDrive()});
+  el('driveLines').innerHTML=drive.lines.map((id,index)=>{
+    const lesson=lessons.find(item=>item.id===id); if(!lesson)return '';
+    return `<article class="drive-line"><b>Line ${index+1} · ${escapeHtml(lesson.title)}</b><p>“${escapeHtml(lesson.phrase)}”</p></article>`;
+  }).join('');
+  el('driveBlocks').innerHTML=drive.blocks.map((block,index)=>`<article class="settings-card drive-block"><span class="kicker">BLOCK ${index+1} OF ${drive.blocks.length}</span><h2>${escapeHtml(block.title)}</h2><p>${escapeHtml(block.body)}</p><p><b>${escapeHtml(block.reps[driveMinutes])}</b></p></article>`).join('');
+  el('driveStop').textContent=drive.stop;
+  el('driveTodayTitle').textContent=drive.title;
+  el('driveTodayCopy').textContent=`${drive.cue} Review the ${driveMinutes}-minute list while parked, then speak it with Lilt closed.`;
+}
+function saveDriveCheckin(){
+  const drive=currentDrive(),actual=+el('driveActual').value,comfort=+el('driveComfort').value,cueHeld=el('driveCueHeld').value;
+  if(![0,20,30,40].includes(actual)||!Number.isInteger(comfort)||comfort<1||comfort>5||!['yes','partly','no'].includes(cueHeld)){el('driveCheckinStatus').textContent='Choose minutes, comfort, and whether the cue held.';return}
+  if(!Array.isArray(state.driveLog))state.driveLog=[];
+  state.driveLog.push({id:crypto.randomUUID(),date:new Date().toISOString(),routineId:drive.id,plannedMinutes:driveMinutes,actualMinutes:actual,comfort,cueHeld});
+  if(state.driveLog.length>500)state.driveLog.splice(0,state.driveLog.length-500);
+  persist(); renderToday(); renderProgress();
+  el('driveCheckinStatus').textContent=actual?`Saved ${actual} minutes of ${drive.title}. This does not score the voice or complete a course activity.`:'Saved as skipped. Nothing was added to your practice time.';
+}
 function updateGoalUI(){
   const p=presets[state.goal];
   el('goalName').textContent=p.name; el('goalDescription').textContent=p.description;
@@ -468,7 +503,11 @@ function renderProgress(){
   const selfRated=at.filter(a=>Number.isFinite(a.comfort)&&Number.isFinite(a.alignment)),progress=courseProgress();
   const comfort=selfRated.length?(selfRated.reduce((sum,a)=>sum+a.comfort,0)/selfRated.length).toFixed(1):'—',alignment=selfRated.length?(selfRated.reduce((sum,a)=>sum+a.alignment,0)/selfRated.length).toFixed(1):'—';
   el('statGrid').innerHTML=[['Practice time',`${Math.floor(totalSec/60)}m`,`${at.length} saved takes`],['Course',`${progress.percent}%`,`${progress.done} of ${progress.total} activities`],['Current streak',`${calculateStreak()} days`,'Consistency over intensity'],['Average score',avg||'—','Against chosen presets'],['Average comfort',comfort==='\u2014'?comfort:`${comfort}/5`,'Your rating after each take'],['Sounds like me',alignment==='\u2014'?alignment:`${alignment}/5`,'Your alignment rating']].map(x=>`<div class="stat-card"><span>${x[0]}</span><strong>${x[1]}</strong><small>${x[2]}</small></div>`).join('');
-  el('historyList').innerHTML=at.length?[...at].reverse().slice(0,12).map(a=>`<div class="history-row"><div><b>${a.lessonTitle}</b><br><small>${new Date(a.date).toLocaleString()} · ${presets[a.goal]?.name||a.goal}</small></div><b>${a.overall}</b><small>${a.scores.pitch} pitch</small><small>${a.scores.brightness} spectral</small><small>${a.comfort?`${a.comfort}/5 comfort`:`${a.scores.movement} move`}</small><small>${a.alignment?`${a.alignment}/5 self`:`${a.scores.ease} control`}</small></div>`).join(''):'<p class="privacy-line">No saved attempts yet.</p>';
+  const history=[...at.map(attempt=>({kind:'attempt',date:attempt.date,attempt})),...driveLogs().map(drive=>({kind:'drive',date:drive.date,drive}))].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,12);
+  el('historyList').innerHTML=history.length?history.map(item=>{
+    if(item.kind==='drive'){const routine=window.COURSE_CONTENT.drives.find(drive=>drive.id===item.drive.routineId);return `<div class="history-row"><div><b>Drive · ${escapeHtml(routine?.title||item.drive.routineId)}</b><br><small>${new Date(item.drive.date).toLocaleString()} · no voice score</small></div><b>${item.drive.actualMinutes?`${item.drive.actualMinutes} min`:'Skipped'}</b><small>${item.drive.comfort}/5 comfort</small><small>cue ${escapeHtml(item.drive.cueHeld)}</small><small></small><small></small></div>`}
+    const a=item.attempt;return `<div class="history-row"><div><b>${a.lessonTitle}</b><br><small>${new Date(a.date).toLocaleString()} · ${presets[a.goal]?.name||a.goal}</small></div><b>${a.overall}</b><small>${a.scores.pitch} pitch</small><small>${a.scores.brightness} spectral</small><small>${a.comfort?`${a.comfort}/5 comfort`:`${a.scores.movement} move`}</small><small>${a.alignment?`${a.alignment}/5 self`:`${a.scores.ease} control`}</small></div>`;
+  }).join(''):'<p class="privacy-line">No saved attempts yet.</p>';
   drawProgressChart();
 }
 function drawProgressChart(){
@@ -485,7 +524,7 @@ function renderSettings(){
 function setGoal(goal){state.goal=goal;persist();el('goalSelect').value=goal;const ramona=el('ramonaReference');if(ramona){ramona.hidden=goal!=='ramona';ramona.querySelector('iframe').src=''}updateGoalUI();renderSettings()}
 function bindEvents(){
   document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.onclick=()=>showView(n.dataset.view));
-  el('goalSelect').onchange=e=>setGoal(e.target.value);el('playReference').onclick=speakReference;el('playRamonaReference').onclick=playRamonaReference;el('ramonaClipSelect').onchange=()=>{el('ramonaReference').querySelector('iframe').src='';el('ramonaClipStatus').textContent='Press Play character clip to load this official clip.'};el('recordButton').onclick=toggleRecording;el('exitPractice').onclick=()=>showView('today');el('retryButton').onclick=()=>{resetMeters();showView('practice')};el('saveContinueButton').onclick=saveCurrent;
+  el('goalSelect').onchange=e=>setGoal(e.target.value);el('openDrive').onclick=()=>showView('drive');el('saveDrive').onclick=saveDriveCheckin;el('driveComfort').oninput=e=>{el('driveComfortOutput').textContent=`${e.target.value} / 5`};el('playReference').onclick=speakReference;el('playRamonaReference').onclick=playRamonaReference;el('ramonaClipSelect').onchange=()=>{el('ramonaReference').querySelector('iframe').src='';el('ramonaClipStatus').textContent='Press Play character clip to load this official clip.'};el('recordButton').onclick=toggleRecording;el('exitPractice').onclick=()=>showView('today');el('retryButton').onclick=()=>{resetMeters();showView('practice')};el('saveContinueButton').onclick=saveCurrent;
   el('cloudAnalyzeButton').onclick=analyzeWordsWithCloud;
   el('comfortRating').oninput=e=>el('comfortOutput').textContent=`${e.target.value} / 5`;el('alignmentRating').oninput=e=>el('alignmentOutput').textContent=`${e.target.value} / 5`;el('listenerReview').onchange=updateValidatedScore;
   el('menuButton').onclick=()=>document.querySelector('.sidebar').classList.toggle('open'); el('privacyButton').onclick=()=>el('modalBackdrop').hidden=false;el('modalClose').onclick=el('modalOkay').onclick=()=>el('modalBackdrop').hidden=true;
@@ -493,7 +532,7 @@ function bindEvents(){
   el('exportData').onclick=()=>exportProgress();
   el('retrySync').onclick=()=>{syncFailed=false;persist()};
   el('loadLatest').onclick=()=>{if(confirm('Discard pending changes on this device and load the latest saved progress? Export a backup in Settings first.')){localStorage.removeItem(pendingKey());location.reload()}};
-  el('importLocal').onclick=()=>{if(confirm('Replace this account’s progress with the previous progress from this browser? Export your current account progress first.')){state=loadState();persist();renderGoalOptions();renderToday();renderCourse();renderProgress();renderSettings();updateGoalUI()}};
+  el('importLocal').onclick=()=>{if(confirm('Replace this account’s progress with the previous progress from this browser? Export your current account progress first.')){state=loadState();if(!Array.isArray(state.driveLog))state.driveLog=[];persist();renderGoalOptions();renderToday();renderCourse();renderProgress();renderSettings();renderDrive();updateGoalUI()}};
   el('logoutButton').onclick=async()=>{
     el('logoutButton').disabled=true;
     try{await syncQueue;if(syncFailed)throw new Error('Save or export pending changes before signing out.');await api('/api/auth/logout',{method:'POST'});location.reload()}
