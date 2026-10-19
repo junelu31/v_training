@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lilt",
+  "account_id": "46a3bf19ab6b63c533375390a829355f",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-05",
+  "ai": { "binding": "AI" },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "lilt-db",
+    "database_id": "c961f51e-6f00-4343-acb2-bd66aca460e7",
+    "migrations_dir": "migrations"
+  }],
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}

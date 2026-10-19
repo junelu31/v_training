@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f1ea" />
+    <meta name="description" content="Lilt — gender-affirming voice practice with private accounts and synced progress." />
+    <title>Lilt — voice practice, made visible</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      @font-face { font-family: "DM Sans"; src: local("Arial"); }
+      @font-face { font-family: "Manrope"; src: local("Arial"); }
+      body { overflow-x: hidden; }
+      .main { overflow: hidden; }
+      .view { width: 100%; }
+      h1, h2, h3, blockquote, .brand, .lede, .lesson-number,
+      .weekly-ring strong, .metric strong, .score-orbit strong,
+      .stat-card strong { font-family: Arial, sans-serif !important; }
+      .course-progress { margin: 34px 0 20px; padding: 22px 25px; border: 1px solid var(--line); border-radius: 13px; display: grid; grid-template-columns: 230px 1fr; align-items: center; gap: 24px; }
+      .course-progress strong { display: block; margin-top: 6px; font-size: 13px; }
+      .course-progress-track { height: 8px; overflow: hidden; border-radius: 10px; background: var(--paper-2); }
+      .course-progress-track i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--coral); transition: width .35s ease; }
+      .course-weeks { display: grid; gap: 16px; }
+      .course-week { display: grid; grid-template-columns: 84px 1fr; gap: 0; border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: rgba(255,255,255,.25); }
+      .course-week.current { border-color: #d69a86; box-shadow: var(--shadow); }
+      .week-number { padding: 28px 20px; background: var(--paper-2); font: 500 30px Arial,sans-serif; color: #98a09b; }
+      .course-week.current .week-number { background: var(--coral); color: white; }
+      .week-body { padding: 25px; }
+      .week-body h2 { margin: 6px 0; font-size: 23px; }
+      .week-body > p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+      .session-list { display: grid; }
+      .session-row { display: grid; grid-template-columns: 58px 190px 1fr 72px; align-items: center; gap: 12px; width: 100%; border: 0; border-top: 1px solid var(--line); padding: 13px 4px; text-align: left; background: transparent; }
+      .session-row span,.session-row small,.session-row i { font-size: 10px; color: var(--muted); font-style: normal; }
+      .session-row b { font-size: 12px; }
+      .session-row i { text-align: right; }
+      .session-row.complete span { color: var(--sage-dark); }
+      .session-row.next { color: var(--coral-dark); }
+      .adjustment-list { display: grid; gap: 8px; margin: 18px 0; text-align: left; }
+      .adjustment { padding: 12px 14px; border-radius: 8px; background: var(--paper); border-left: 3px solid var(--coral); }
+      .adjustment strong { display: block; font-size: 11px; margin-bottom: 4px; }
+      .adjustment p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+      .self-check { margin: 18px 0; padding: 16px; border-radius: 9px; background: #eef0e9; text-align: left; }
+      .self-check label { display: block; margin-top: 13px; font-size: 11px; }
+      .self-check output { float: right; color: var(--muted); }
+      .self-check input { display: block; width: 100%; margin-top: 8px; accent-color: var(--coral); }
+      .observation-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 8px; margin-top: 20px; }
+      .observation { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+      .observation span,.observation strong,.observation small { display: block; }
+      .observation span,.observation small { font-size: 9px; color: var(--muted); }
+      .observation strong { margin: 5px 0; font-size: 16px; }
+      .cloud-analysis { width: 100%; margin-top: 12px; }
+      .cloud-analysis-note { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+      .analysis-status { min-height: 20px; color: var(--muted); font-size: 10px; line-height: 1.5; text-align: left; }
+      .word-findings { display: grid; gap: 10px; margin-top: 18px; }
+      .word-finding { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fffdfa; }
+      .word-finding-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+      .word-finding-head strong { font: 600 14px Arial,sans-serif; }
+      .word-finding-head small { color: var(--muted); font-size: 9px; }
+      .word-finding p { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+      .word-finding button { margin-top: 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; font-size: 10px; }
+      .word-finding .finding-tag { border-radius: 20px; padding: 4px 7px; background: #f0e4db; color: #805449; font-size: 9px; }
+      @media(max-width:700px){.course-progress{grid-template-columns:1fr}.course-week{grid-template-columns:1fr}.week-number{padding:16px 22px}.session-row{grid-template-columns:48px 1fr 55px}.session-row small{display:none}.observation-grid{grid-template-columns:1fr}}
+    </style>
+  </head>
+  <body>
+    <section id="authScreen" class="auth-screen" aria-labelledby="authTitle">
+      <form id="authForm" class="auth-card">
+        <span class="kicker">LILT · YOUR PRACTICE</span>
+        <h1 id="authTitle">Welcome back.</h1>
+        <p>Sign in to keep your progress across devices. Your audio stays in this browser.</p>
+        <label>Email<input id="authEmail" type="email" autocomplete="email" required maxlength="254" /></label>
+        <label>Password<input id="authPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="128" /></label>
+        <p id="authMessage" role="status" aria-live="polite">Checking your session…</p>
+        <button id="authSubmit" class="primary-button full" type="submit">Sign in</button>
+        <button id="authMode" class="secondary-button full" type="button">Create an account</button>
+      </form>
+    </section>
+    <div class="app-shell" id="appShell" hidden>
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="#today" aria-label="Lilt home">
+          <span class="brand-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span>Lilt</span>
+        </a>
+
+        <nav class="nav-list">
+          <button class="nav-item active" data-view="today"><span>⌂</span>Today</button>
+          <button class="nav-item" data-view="course"><span>◫</span>Course</button>
+          <button class="nav-item" data-view="practice"><span>◉</span>Practice</button>
+          <button class="nav-item" data-view="library"><span>▤</span>Library</button>
+          <button class="nav-item" data-view="progress"><span>↗</span>Progress</button>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
+          <div class="profile-chip">
+            <div class="avatar">J</div>
+            <div><strong>Your practice</strong><small id="accountEmail"></small></div>
+          </div>
+          <p id="syncStatus" role="status" aria-live="polite"></p>
+          <button class="secondary-button full" id="retrySync" hidden>Retry saving</button>
+          <button class="secondary-button full" id="loadLatest" hidden>Load latest progress</button>
+          <button class="secondary-button full" id="logoutButton">Sign out</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <button class="icon-button menu-button" id="menuButton" aria-label="Open menu">☰</button>
+          <div class="goal-pill">
+            <span class="goal-dot"></span>
+            <select id="goalSelect" aria-label="Voice goal"></select>
+          </div>
+          <div class="top-actions">
+            <span class="streak"><span>✦</span><b id="streakCount">0</b> day streak</span>
+            <button class="icon-button" id="privacyButton" aria-label="Privacy information">?</button>
+          </div>
+        </header>
+
+        <section class="view active" id="todayView">
+          <div class="eyebrow" id="dateLabel"></div>
+          <div class="hero-row">
+            <div>
+              <h1>Good <span id="timeGreeting">morning</span>.</h1>
+              <p class="lede">A short, focused session beats a heroic one. Let’s build ease.</p>
+            </div>
+            <div class="weekly-ring" id="weeklyRing" aria-label="Weekly practice progress">
+              <div><strong id="weekMinutes">0</strong><small>of 60 min</small></div>
+            </div>
+          </div>
+
+          <div class="section-heading">
+            <div><span class="kicker">TODAY’S SESSION</span><h2 id="sessionTitle">Foundation &amp; forward focus</h2></div>
+            <span class="duration" id="sessionDuration">12–15 MIN</span>
+          </div>
+
+          <div class="lesson-path" id="lessonPath"></div>
+
+          <div class="insight-grid">
+            <article class="insight-card warm">
+              <span class="card-icon">◇</span>
+              <div><span class="kicker">SESSION INTENTION</span><h3 id="coachNoteTitle">Build ease before detail</h3>
+                <p id="coachNoteCopy">Notice what changes without forcing it.</p>
+              </div>
+            </article>
+            <article class="insight-card">
+              <span class="card-icon">↗</span>
+              <div><span class="kicker">THIS WEEK</span><h3 id="weeklySummary">No sessions yet</h3>
+                <p id="weeklyCopy">Your first sample becomes your baseline. Progress is compared with you, not a population.</p>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="courseView">
+          <div class="eyebrow">8 WEEKS · 40 SESSIONS · SELF-PACED</div>
+          <h1>Your complete course</h1>
+          <p class="lede">Move from vocal ease and awareness into resonance, pitch, weight, prosody, real-world transfer, durability, and an independent maintenance routine. Five short sessions make one training week; rest days can go wherever your voice needs them.</p>
+          <div class="course-progress"><div><span class="kicker">COURSE PROGRESS</span><strong id="courseProgressText">0 activities complete</strong></div><div class="course-progress-track"><i id="courseProgressFill"></i></div></div>
+          <div class="course-weeks" id="courseWeeks"></div>
+        </section>
+
+        <section class="view" id="practiceView">
+          <div class="practice-header">
+            <div><span class="kicker" id="practiceTrack">FOUNDATION</span><h1 id="practiceTitle">Easy onset reset</h1><p id="practiceWhy">Find clean, low-effort sound before shaping it.</p></div>
+            <button class="text-button" id="exitPractice">Exit session</button>
+          </div>
+
+          <div class="practice-layout">
+            <article class="studio-card">
+              <div class="step-meta"><span id="stepCount">STEP 1 OF 4</span><span id="stepDuration">2 MIN</span></div>
+              <div class="prompt-wrap">
+                <button class="play-reference" id="playReference" aria-label="Hear exact prompt in U.S. English">▶</button>
+                <div>
+                  <span class="kicker">HEAR THE EXACT PROMPT · U.S. ENGLISH</span>
+                  <blockquote id="practicePhrase">“Mmm—maybe we meet near noon.”</blockquote>
+                  <p class="cue" id="practiceCue">Let the hum buzz lightly at the front of your face, then keep that feeling through the words.</p>
+                  <p class="privacy-line" id="referenceCaption">Device speech voice reads this exact line in U.S. English; voice availability and quality vary by browser.</p>
+                </div>
+              </div>
+              <div id="ramonaReference" class="ramona-reference" hidden><label>Optional character inspiration clip <select id="ramonaClipSelect" class="full-select"><option value="68OueL-Iv2o">Scott Pilgrim Takes Off · Netflix clip</option><option value="7wd5KEaOtm4">Scott Pilgrim vs. the World · Universal trailer</option></select></label><button type="button" class="secondary-button" id="playRamonaReference">Play character clip</button><p class="privacy-line" id="ramonaClipStatus">Official clip is separate from the exact course prompt.</p><iframe title="Official Scott Pilgrim clip featuring Ramona Flowers" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><small>Official studio clips play from YouTube; this is inspiration only, not a recording of the displayed course line.</small></div>
+
+              <div class="visualizer" id="visualizer">
+                <canvas id="waveCanvas" width="900" height="180"></canvas>
+                <div class="visualizer-idle" id="visualizerIdle"><span>•</span> Your live voice map will appear here</div>
+                <div class="live-chip" id="liveChip">LIVE</div>
+              </div>
+
+              <div class="meter-grid" id="meterGrid">
+                <div class="metric"><span>Pitch</span><strong id="pitchValue">—</strong><small>Hz median</small></div>
+                <div class="metric"><span>Spectral balance</span><strong id="brightnessValue">—</strong><small>pitch-aware resonance proxy · dB</small></div>
+                <div class="metric"><span>Movement</span><strong id="movementValue">—</strong><small>pitch range</small></div>
+                <div class="metric"><span>Signal</span><strong id="easeValue">—</strong><small>pitch confidence</small></div>
+              </div>
+
+              <button class="record-button" id="recordButton"><span class="record-dot"></span><b>Start recording</b><small>SPACE</small></button>
+              <p class="privacy-line">Audio stays on this device. Saved recordings are optional.</p>
+            </article>
+
+            <aside class="coach-panel">
+              <div class="goal-summary"><span class="kicker">CURRENT TARGET</span><h3 id="goalName">Balanced femme</h3><p id="goalDescription"></p></div>
+              <div class="target-list" id="targetList"></div>
+              <div class="tip-box"><strong>Keep it comfortable</strong><p>Stop if you feel pain, burning, persistent roughness, or loss of range. Hydrate and reset later.</p></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="resultsView">
+          <div class="results-head"><span class="kicker">ATTEMPT COMPLETE</span><h1>Listen, notice, adjust.</h1><p>The score describes this recording against your chosen target—not your gender or worth.</p></div>
+          <div class="results-grid">
+            <article class="score-card">
+              <div class="score-orbit"><strong id="overallScore">—</strong><small>overall</small></div>
+              <h2 id="scoreHeadline">Building your voice map</h2>
+              <p id="scoreFeedback"></p>
+              <div class="adjustment-list" id="coachAdjustments"></div>
+              <audio id="recordingPlayback" controls></audio>
+              <div class="self-check">
+                <span class="kicker">YOUR EXPERIENCE MATTERS TOO</span>
+                <label>Comfort <output id="comfortOutput">3 / 5</output><input id="comfortRating" type="range" min="1" max="5" value="3" /></label>
+                <label>Sounds like me <output id="alignmentOutput">3 / 5</output><input id="alignmentRating" type="range" min="1" max="5" value="3" /></label>
+                <label class="listener-review">Outside perception <select id="listenerReview" class="full-select"><option value="">Not tested</option><option value="mixed">Mixed or uncertain feedback</option><option value="consistent">3+ unfamiliar listeners consistently read it as female in spontaneous conversation</option></select></label>
+                <p class="score-evidence" id="scoreEvidence"></p>
+              </div>
+              <div class="result-actions">
+                <button class="secondary-button" id="retryButton">Try again</button>
+                <button class="primary-button" id="saveContinueButton">Save &amp; continue</button>
+              </div>
+              <button class="secondary-button cloud-analysis" id="cloudAnalyzeButton" hidden>Analyze words with Workers AI</button>
+              <p class="cloud-analysis-note" id="cloudAnalysisNote" hidden>This uploads this recording to Cloudflare Workers AI for transcription. The app does not retain the audio. Word locations use timestamps returned by Cloudflare; word boundaries are approximate.</p>
+              <p class="analysis-status" id="wordAnalysisStatus" role="status" aria-live="polite"></p>
+            </article>
+            <article class="breakdown-card">
+              <div class="section-heading compact"><div><span class="kicker">VOICE MAP</span><h2>What this take did</h2></div></div>
+              <div id="scoreBreakdown"></div>
+              <div class="transcript-box"><span class="kicker">HEARD AS</span><p id="transcriptText">A transcript will appear here when your browser provides one. Acoustic scoring does not depend on it.</p></div>
+              <div class="word-findings" id="wordFindings" aria-live="polite"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="libraryView">
+          <div class="eyebrow">TRAIN WITH INTENTION</div>
+          <h1>Practice library</h1>
+          <p class="lede">Choose the movement you want to isolate, then carry it into real speech.</p>
+          <div class="filter-row" id="libraryFilters"></div>
+          <div class="library-grid" id="libraryGrid"></div>
+          <article class="source-card">
+            <div><span class="kicker">REAL-VOICE SHADOWING</span><h2>Bring a voice reference you love</h2>
+              <p>Import a short clip you have permission to use, or explore public-domain speech at Mozilla Common Voice and LibriVox. Match rhythm and resonance—not identity.</p>
+            </div>
+            <div class="source-actions"><a href="https://commonvoice.mozilla.org/en/datasets" target="_blank" rel="noreferrer">Common Voice ↗</a><a href="https://librivox.org/" target="_blank" rel="noreferrer">LibriVox ↗</a></div>
+          </article>
+        </section>
+
+        <section class="view" id="progressView">
+          <div class="eyebrow">YOUR DATA, YOUR BASELINE</div><h1>Progress</h1><p class="lede">Look for comfortable consistency over time, not a perfect number.</p>
+          <div class="stat-grid" id="statGrid"></div>
+          <article class="chart-card">
+            <div class="section-heading compact"><div><span class="kicker">LAST 12 SAVED ATTEMPTS</span><h2>Voice map trend</h2></div><select id="chartMetric"><option value="overall">Overall</option><option value="pitch">Pitch</option><option value="brightness">Spectral balance</option><option value="movement">Movement</option><option value="ease">Ease</option></select></div>
+            <canvas id="progressCanvas" width="1000" height="320"></canvas>
+            <div class="empty-chart" id="emptyChart">Complete and save a practice attempt to begin your trend.</div>
+          </article>
+          <article class="history-card"><div class="section-heading compact"><div><span class="kicker">HISTORY</span><h2>Recent practice</h2></div><button class="text-button danger" id="clearHistory">Clear history</button></div><div id="historyList"></div></article>
+        </section>
+
+        <section class="view" id="settingsView">
+          <div class="eyebrow">MAKE IT YOURS</div><h1>Settings</h1><p class="lede">Progress and acoustic scoring are saved to your account and computed on this device. A recording is uploaded only when you request Workers AI transcription; word locations then use Cloudflare’s returned timestamps.</p>
+          <div class="settings-grid">
+            <article class="settings-card"><span class="kicker">VOICE GOAL</span><h2>Choose a direction</h2><p>Presets are starting points. Tune them to your anatomy, comfort, culture, and expression.</p><div id="presetCards"></div></article>
+            <article class="settings-card"><span class="kicker">PRIVACY &amp; DATA</span><h2>Your account, your progress</h2><label class="toggle-row"><span><b>Save audio with attempts</b><small>Uses IndexedDB in this browser; audio does not sync</small></span><input type="checkbox" id="saveAudioToggle" /></label><button class="secondary-button full" id="exportData">Export progress JSON</button><button class="secondary-button full" id="importLocal" hidden>Import previous browser progress</button><button class="secondary-button danger full" id="resetData">Reset account progress</button></article>
+            <article class="settings-card"><span class="kicker">PROMPT AUDIO</span><h2>Exact U.S. English line</h2><p>The play button speaks the displayed course line through your device’s speech engine so the words stay matched. Voice quality and availability vary by browser. Ramona’s official clips are optional character inspiration only; they do not read the course prompts.</p><div class="source-actions"><a href="https://www.youtube.com/watch?v=68OueL-Iv2o" target="_blank" rel="noreferrer">Netflix official Ramona clip ↗</a></div></article>
+            <article class="settings-card safety"><span class="kicker">IMPORTANT</span><h2>This is practice support, not clinical care</h2><p>Microphones, rooms, accents, and health all change measurements. If voice use is painful or hoarseness lasts more than two weeks, consult a voice-specialized speech-language pathologist or ENT.</p></article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="modalBackdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <button class="modal-close" id="modalClose" aria-label="Close">×</button>
+        <span class="kicker">PRIVATE BY DEFAULT</span><h2 id="modalTitle">Your voice stays here.</h2>
+        <p>Acoustic scoring runs in this browser. Progress is saved to your account. When you choose Analyze words with Workers AI, this recording is sent to Cloudflare for transcription and timestamped segments; the app does not retain the uploaded recording. Browser speech recognition, when available, may also use your browser vendor’s service.</p>
+        <button class="primary-button" id="modalOkay">Got it</button>
+      </div>
+    </div>
+
+    <script src="course.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
