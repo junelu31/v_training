@@ -42,9 +42,9 @@ Run `npm run check` and `npm test` for syntax checks and integration tests in th
 
 ## Accounts and saving
 
-Use a password of 12–128 characters. Passwords are salted and hashed with PBKDF2-SHA-256 (100,000 iterations); random session tokens are stored as SHA-256 hashes in D1. Sessions expire after 30 days. Production cookies use Secure, HttpOnly, SameSite, and the `__Host-` prefix. Write requests require the app's origin, and signup/login attempts are rate limited by email and IP. Email addresses are login identifiers; email verification and password recovery are not implemented.
+Use a password of 12–128 characters. Passwords are salted and hashed with PBKDF2-SHA-256 (100,000 iterations); random session tokens are stored as SHA-256 hashes in D1. Sessions expire after 30 days. Production cookies use Secure, HttpOnly, SameSite, and the `__Host-` prefix. Write requests require the app's origin. Failed sign-in attempts are rate limited per IP, and failed logins are also limited per email plus IP. A successful login clears that email’s failure count, so signing in does not lock the account. Email addresses are login identifiers; email verification and password recovery are not implemented.
 
-Progress, scores, transcripts, course completion, and preferences are isolated by account. Concurrent device/tab edits are rejected rather than silently overwriting newer progress. Failed saves retain a per-account device backup; use Retry saving, or export a JSON backup in Settings and choose Load latest progress to discard pending changes. The initial release accepts up to 1 MB of progress per save; larger histories must be exported and trimmed. Sign out waits for pending saves.
+Progress, scores, transcripts, course completion, and preferences are isolated by account. Saves keep the newest account version and merge attempts, drive check-ins, and course completions if two devices save at once. Retry saving reloads the server copy and merges this device’s pending changes. Failed saves retain a per-account device backup; export a JSON backup in Settings, or choose Load latest progress to discard pending changes. Saved history keeps the latest 300 takes, drops stored word-coaching paragraphs, and stays within the 1 MB save limit. Sign out waits for pending saves.
 
 Existing browser-only progress can be imported explicitly from Settings after signing in. Import replaces account progress; export existing account data first. Old browser recordings remain in their original IndexedDB database; new recordings are scoped to the signed-in account. Reset account progress clears server progress/settings and this account's recordings on the current browser; it does not delete the account or recordings on other devices.
 
@@ -71,7 +71,7 @@ Every commit on this computer pushes the current branch to GitHub and deploys th
 
 ## Drive practice
 
-Drive practice is a 20-, 30-, or 40-minute speaking list. A different routine is chosen for each calendar day, cycling through the nine lists. An optional check-in logs minutes, comfort, and whether the cue held. That log counts toward the weekly minute ring and the streak. It does not complete a course activity.
+Drive practice is a 20-, 30-, or 40-minute speaking list. Today’s routine matches the current course week. After all 40 sessions are complete, the maintenance routine is used. Choosing a planned length also sets the check-in minutes, which you can still change before saving. An optional check-in logs minutes, comfort, and whether the cue held. That log counts toward the weekly minute ring, the streak, and Progress practice time. It does not complete a course activity.
 
 - <https://www.asha.org/practice-portal/professional-issues/gender-affirming-voice-and-communication/>
 - <https://transcare.ucsf.edu/guidelines/vocal-health>

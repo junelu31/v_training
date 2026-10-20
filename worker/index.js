@@ -116,10 +116,28 @@ function validateDriveLog(driveLog) {
   });
 }
 
-async function limit(db, key, maximum = 20) {
+const IP_FAILURE_LIMIT = 50;
+const LOGIN_FAILURE_LIMIT = 10;
+
+function clientIp(request) {
+  return request.headers.get('CF-Connecting-IP') || 'local';
+}
+
+async function bumpLimit(db, key) {
   const now = Date.now();
   const result = await db.prepare('INSERT INTO auth_limits (key, count, expires_at) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET count = CASE WHEN expires_at <= ? THEN 1 ELSE count + 1 END, expires_at = CASE WHEN expires_at <= ? THEN excluded.expires_at ELSE expires_at END RETURNING count').bind(key, now + 15 * 60 * 1000, now, now).first();
-  if (result.count > maximum) throw new HttpError(429, 'Too many requests. Try again in 15 minutes.');
+  return result.count;
+}
+
+async function assertUnderLimit(db, key, maximum) {
+  const now = Date.now();
+  const row = await db.prepare('SELECT count, expires_at FROM auth_limits WHERE key = ?').bind(key).first();
+  if (row && row.expires_at > now && row.count >= maximum) throw new HttpError(429, 'Too many requests. Try again in 15 minutes.');
+}
+
+async function limit(db, key, maximum = 20) {
+  const count = await bumpLimit(db, key);
+  if (count > maximum) throw new HttpError(429, 'Too many requests. Try again in 15 minutes.');
 }
 
 async function api(request, env) {
@@ -133,21 +151,31 @@ async function api(request, env) {
     const email = typeof input?.email === 'string' ? input.email.trim().toLowerCase() : '';
     const password = input?.password;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || typeof password !== 'string' || password.length < 12 || password.length > 128) throw new HttpError(400, 'Enter an email and a password with 12–128 characters.');
-    await limit(db, `ip:${await digest(request.headers.get('CF-Connecting-IP') || 'local')}`);
-    await limit(db, `email:${await digest(email)}`);
+    const ipFailKey = `ipfail:${await digest(clientIp(request))}`;
+    const loginFailKey = `fail:${await digest(`${email}|${clientIp(request)}`)}`;
+    await assertUnderLimit(db, ipFailKey, IP_FAILURE_LIMIT);
+    if (path.endsWith('login')) await assertUnderLimit(db, loginFailKey, LOGIN_FAILURE_LIMIT);
     let user;
     if (path.endsWith('register')) {
       const id = crypto.randomUUID(), salt = randomToken();
       const hash = await passwordHash(password, salt);
       const result = await db.prepare('INSERT INTO users (id, email, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO NOTHING').bind(id, email, hash, salt, Date.now()).run();
-      if (!result.meta.changes) throw new HttpError(409, 'Unable to create this account. Try signing in.');
+      if (!result.meta.changes) {
+        await bumpLimit(db, ipFailKey);
+        throw new HttpError(409, 'Unable to create this account. Try signing in.');
+      }
       user = { id, email };
     } else {
       user = await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first();
       const hash = await passwordHash(password, user?.salt || 'lilt-dummy-password-salt');
       // Compare fixed-size hashes using the Workers constant-time Web Crypto extension.
       const expected = user?.password_hash || '0'.repeat(64);
-      if (!crypto.subtle.timingSafeEqual(encoder.encode(hash), encoder.encode(expected)) || !user) throw new HttpError(401, 'Email or password is incorrect.');
+      if (!crypto.subtle.timingSafeEqual(encoder.encode(hash), encoder.encode(expected)) || !user) {
+        await bumpLimit(db, loginFailKey);
+        await bumpLimit(db, ipFailKey);
+        throw new HttpError(401, 'Email or password is incorrect.');
+      }
+      await db.prepare('DELETE FROM auth_limits WHERE key = ?').bind(loginFailKey).run();
     }
     const token = randomToken();
     await db.batch([
@@ -160,12 +188,12 @@ async function api(request, env) {
   const user = await session(request, db);
   if (!user) throw new HttpError(401, 'Sign in to access your progress.');
   if(path==='/api/analyze'&&method==='POST'){
-    if(!env.AI)throw new HttpError(503,'Cloud transcription is not configured for this deployment.');
     const contentType=(request.headers.get('Content-Type')||'').split(';')[0].toLowerCase();
     if(!['audio/webm','audio/wav','audio/x-wav','audio/mpeg','audio/mp4','audio/ogg','audio/flac'].includes(contentType))throw new HttpError(415,'Use a WebM, WAV, MP3, MP4, OGG, or FLAC recording.');
-    await limit(db,`analysis:${user.id}`,12);
     const prompt=promptHeader(request.headers.get('X-Practice-Prompt')||'');
     const bytes=await audioBytes(request);
+    if(!env.AI)throw new HttpError(503,'Cloud transcription is not configured for this deployment.');
+    await limit(db,`analysis:${user.id}`,12);
     try{
       const output=await env.AI.run('@cf/openai/whisper-large-v3-turbo',{audio:toBase64(bytes),task:'transcribe',language:'en',vad_filter:true,initial_prompt:prompt});
       const text=String(output?.text||output?.transcription_info?.text||'').trim();
@@ -194,7 +222,10 @@ async function api(request, env) {
     const result = input.version === 0
       ? await db.prepare('INSERT INTO user_state (user_id, data, version, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(user_id) DO NOTHING').bind(user.id, JSON.stringify(state), Date.now()).run()
       : await db.prepare('UPDATE user_state SET data = ?, version = version + 1, updated_at = ? WHERE user_id = ? AND version = ?').bind(JSON.stringify(state), Date.now(), user.id, input.version).run();
-    if (!result.meta.changes) throw new HttpError(409, 'Progress changed in another tab or device. Export your pending progress, then reload.');
+    if (!result.meta.changes) {
+      const current = await db.prepare('SELECT version FROM user_state WHERE user_id = ?').bind(user.id).first();
+      return json({ error: 'Progress changed in another tab or device.', version: current?.version ?? 0 }, 409);
+    }
     return json({ version: input.version + 1 });
   }
   return json({ error: 'Not found.' }, 404);
