@@ -9,4 +9,4 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 echo "Updating GitHub ($branch)..."
 git push origin "HEAD:$branch" || exit 1
 echo "Deploying the Cloudflare Worker..."
-npm run deploy || exit 1
+cmd.exe //c "npm run deploy" || exit 1
