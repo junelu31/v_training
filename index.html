@@ -154,10 +154,10 @@
           <article class="insight-card drive-today">
             <span class="card-icon">▷</span>
             <div>
-              <span class="kicker">DRIVE PRACTICE · APP CLOSED</span>
+              <span class="kicker" id="driveTodayDate">TODAY’S DRIVE</span>
               <h3 id="driveTodayTitle">Ease on the road</h3>
-              <p id="driveTodayCopy">A list you memorize while parked, then speak from memory.</p>
-              <button class="secondary-button" id="openDrive" type="button">Review while parked</button>
+              <p id="driveTodayCopy"></p>
+              <button class="secondary-button" id="openDrive" type="button">Open today’s practice</button>
             </div>
           </article>
 
@@ -264,28 +264,19 @@
         </section>
 
         <section class="view" id="driveView">
-          <div class="eyebrow">PARKED REVIEW · THEN CLOSE LILT</div>
+          <div class="eyebrow" id="driveDate">TODAY</div>
           <h1 id="driveTitle">Ease on the road</h1>
-          <p class="lede">Read this while parked. Memorize the cue and three lines. The drive itself is spoken with the app closed: no screen, no prompt audio, and no timer.</p>
           <div class="drive-duration" id="driveDurations" role="group" aria-label="List length"></div>
-          <p class="privacy-line" style="text-align:left">Longer lists repeat the same lines. They do not add new words.</p>
           <div class="drive-stack">
             <article class="settings-card">
-              <span class="kicker">ONE CUE TO REMEMBER</span>
+              <span class="kicker">CUE</span>
               <h2 id="driveCue"></h2>
-              <p id="driveCueNote"></p>
             </article>
             <div id="driveLines" class="drive-stack"></div>
             <div id="driveBlocks" class="drive-stack"></div>
-            <article class="settings-card safety">
-              <span class="kicker">BEFORE YOU DRIVE</span>
-              <h2>Leave the phone alone</h2>
-              <p id="driveStop"></p>
-            </article>
             <article class="settings-card">
-              <span class="kicker">AFTER THE DRIVE · OPTIONAL</span>
-              <h2>Log it when you are parked again</h2>
-              <p>This records that you practiced. It does not score your voice, upload audio, or complete a course activity.</p>
+              <span class="kicker">CHECK-IN</span>
+              <h2>After you practice</h2>
               <div class="drive-check">
                 <label>Minutes you actually spoke
                   <select id="driveActual" class="full-select">

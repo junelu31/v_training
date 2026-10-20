@@ -1,0 +1,12 @@
+#!/bin/sh
+# After each commit, push this branch and deploy the Cloudflare Worker.
+if [ -n "$LILT_PUBLISHING" ]; then
+  exit 0
+fi
+export LILT_PUBLISHING=1
+cd "$(git rev-parse --show-toplevel)" || exit 1
+branch=$(git rev-parse --abbrev-ref HEAD)
+echo "Updating GitHub ($branch)..."
+git push origin "HEAD:$branch" || exit 1
+echo "Deploying the Cloudflare Worker..."
+npm run deploy || exit 1

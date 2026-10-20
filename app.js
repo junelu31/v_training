@@ -110,11 +110,12 @@ function currentCourseSession(){const sessions=allCourseSessions();return sessio
 function courseProgress(){const sessions=allCourseSessions(),total=sessions.reduce((sum,s)=>sum+s.activities.length,0),done=sessions.reduce((sum,s)=>sum+s.activities.filter(a=>activityComplete(a.id)).length,0);return {sessions,total,done,percent:total?Math.round(done/total*100):0}}
 function activityContext(activityId){for(const session of allCourseSessions()){const index=session.activities.findIndex(a=>a.id===activityId);if(index>=0)return {session,index,activity:session.activities[index]}}return null}
 function driveLogs(){return Array.isArray(state.driveLog)?state.driveLog:[]}
-function currentDrive(){
-  const drives=window.COURSE_CONTENT.drives,progress=courseProgress();
-  if(progress.total&&progress.done>=progress.total)return drives.find(drive=>drive.week==='maintenance')||drives.at(-1);
-  return drives.find(drive=>drive.week===currentCourseSession().week)||drives[0];
+function currentDrive(date=new Date()){
+  const drives=window.COURSE_CONTENT.drives;
+  const index=Math.floor(Date.UTC(date.getFullYear(),date.getMonth(),date.getDate())/86400000);
+  return drives[((index%drives.length)+drives.length)%drives.length];
 }
+function driveDateLabel(date=new Date()){return date.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})}
 function driveMinutesSince(since){return driveLogs().filter(entry=>new Date(entry.date).getTime()>=since).reduce((sum,entry)=>sum+(entry.actualMinutes||0),0)}
 
 function init(){
@@ -141,7 +142,7 @@ function renderToday(){
   el('weeklySummary').textContent = recent.length ? `${recent.length} saved attempt${recent.length===1?'':'s'} · ${mins} min` : driveMins ? `${driveMins} min from drives` : 'No sessions yet';
   const scoreCopy = recent.length ? `${Math.round(recent.reduce((s,a)=>s+a.overall,0)/recent.length)} average score. Notice what feels easier before chasing higher numbers.` : 'Your first sample becomes your baseline. Progress is compared with you, not a population.';
   el('weeklyCopy').textContent = driveMins ? `${scoreCopy} ${driveMins} minutes logged from drives this week.` : scoreCopy;
-  const drive=currentDrive(); el('driveTodayTitle').textContent=drive.title; el('driveTodayCopy').textContent=`${drive.cue} Review the list while parked, then speak it with Lilt closed.`;
+  const drive=currentDrive(); el('driveTodayDate').textContent=driveDateLabel(); el('driveTodayTitle').textContent=drive.title; el('driveTodayCopy').textContent=drive.cue;
   el('streakCount').textContent=calculateStreak();
   el('coachNoteTitle').textContent=session.objective;el('coachNoteCopy').textContent=`After this session, ask: ${session.reflection}`;
   document.querySelectorAll('#lessonPath [data-lesson]').forEach(b=>b.onclick=()=>startLesson(b.dataset.lesson,b.dataset.activity));
@@ -188,8 +189,7 @@ function renderLibrary(filter){
 
 function renderDrive(){
   const drive=currentDrive();
-  el('driveTitle').textContent=drive.title; el('driveCue').textContent=drive.cue;
-  el('driveCueNote').textContent=drive.pickCue?'Choose that one cue now, while you can still look. On the road you will not come back to this screen.':'This is the only cue for the drive. On the road you will not come back to this screen.';
+  el('driveDate').textContent=driveDateLabel(); el('driveTitle').textContent=drive.title; el('driveCue').textContent=drive.cue;
   el('driveDurations').innerHTML=[20,30,40].map(min=>`<button type="button" class="filter-button ${min===driveMinutes?'active':''}" data-drive-minutes="${min}">${min} min</button>`).join('');
   document.querySelectorAll('[data-drive-minutes]').forEach(button=>button.onclick=()=>{driveMinutes=+button.dataset.driveMinutes;renderDrive()});
   el('driveLines').innerHTML=drive.lines.map((id,index)=>{
@@ -197,9 +197,7 @@ function renderDrive(){
     return `<article class="drive-line"><b>Line ${index+1} · ${escapeHtml(lesson.title)}</b><p>“${escapeHtml(lesson.phrase)}”</p></article>`;
   }).join('');
   el('driveBlocks').innerHTML=drive.blocks.map((block,index)=>`<article class="settings-card drive-block"><span class="kicker">BLOCK ${index+1} OF ${drive.blocks.length}</span><h2>${escapeHtml(block.title)}</h2><p>${escapeHtml(block.body)}</p><p><b>${escapeHtml(block.reps[driveMinutes])}</b></p></article>`).join('');
-  el('driveStop').textContent=drive.stop;
-  el('driveTodayTitle').textContent=drive.title;
-  el('driveTodayCopy').textContent=`${drive.cue} Review the ${driveMinutes}-minute list while parked, then speak it with Lilt closed.`;
+  el('driveTodayDate').textContent=driveDateLabel(); el('driveTodayTitle').textContent=drive.title; el('driveTodayCopy').textContent=drive.cue;
 }
 function saveDriveCheckin(){
   const drive=currentDrive(),actual=+el('driveActual').value,comfort=+el('driveComfort').value,cueHeld=el('driveCueHeld').value;
@@ -208,7 +206,7 @@ function saveDriveCheckin(){
   state.driveLog.push({id:crypto.randomUUID(),date:new Date().toISOString(),routineId:drive.id,plannedMinutes:driveMinutes,actualMinutes:actual,comfort,cueHeld});
   if(state.driveLog.length>500)state.driveLog.splice(0,state.driveLog.length-500);
   persist(); renderToday(); renderProgress();
-  el('driveCheckinStatus').textContent=actual?`Saved ${actual} minutes of ${drive.title}. This does not score the voice or complete a course activity.`:'Saved as skipped. Nothing was added to your practice time.';
+  el('driveCheckinStatus').textContent=actual?`Saved ${actual} minutes of ${drive.title}.`:'Saved as skipped.';
 }
 function updateGoalUI(){
   const p=presets[state.goal];

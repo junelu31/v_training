@@ -1,4 +1,3 @@
-const DRIVE_STOP = 'Review this only while parked. On the road, leave Lilt closed: no screen and no prompt audio. No straw in your mouth. One cue at a time. You can speak as loud as you want; stop if your throat presses, burns, feels rough, or you get dizzy. Skip this on an unfamiliar or difficult drive.';
 const DRIVE_CLOSE = {
   title: 'Close',
   body: 'Two soft glides, then say: “This is the voice I’m choosing today, and I know how to find it comfortably.” Notice comfort. If the voice turned rough, stop. Do not start another block.',
@@ -109,57 +108,57 @@ window.COURSE_CONTENT = {
       {title:'Your maintenance plan',objective:'Finish with a repeatable routine and relapse plan.',drills:['morning_reset','fatigue_reset','maintenance','greeting'],reflection:'What will you practice three times next week, and when?'}]}
   ],
   drives: [
-    {id:'week-1',week:1,title:'Ease on the road',cue:'Air first. No push, and no big puff of air.',lines:['flow','reset','greeting'],pickCue:false,stop:DRIVE_STOP,blocks:[
+    {id:'week-1',week:1,title:'Ease on the road',cue:'Air first. No push, and no big puff of air.',lines:['flow','reset','greeting'],pickCue:false,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Hum into line 2. One small yawn-sigh, then line 3.',reps:{20:'6 easy glides, hum line 2 four times, then line 3 twice.',30:'8 easy glides, hum line 2 six times, then line 3 three times.',40:'8 easy glides, hum line 2 six times, then line 3 three times.'}},
       {title:'One cue',body:'Silent airflow on “who,” then speak line 1. Keep the start easy.',reps:{20:'Line 1, four times.',30:'Line 1, six times.',40:'Line 1, eight times.'}},
       {title:'Talk',body:'Narrate the drive in ordinary sentences. Meaning first. Keep the easy start. Any comfortable volume is fine.',reps:{20:'One topic: what is happening on this drive.',30:'Narrate, then one real greeting and one real request.',40:'Narrate, then the greeting, the request, and one short story. Halfway through, two soft glides, then continue.'}},
       DRIVE_CLOSE
     ]},
-    {id:'week-2',week:2,title:'Resonance on the road',cue:'Smaller, brighter space. Jaw and throat stay easy.',lines:['nasal_anchor','resonance','greeting'],pickCue:false,stop:DRIVE_STOP,blocks:[
+    {id:'week-2',week:2,title:'Resonance on the road',cue:'Smaller, brighter space. Jaw and throat stay easy.',lines:['nasal_anchor','resonance','greeting'],pickCue:false,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Then hum into line 1 so you can feel a light buzz near the lips.',reps:{20:'6 glides, then line 1 four times from a hum.',30:'8 glides, then line 1 six times from a hum.',40:'8 glides, then line 1 six times from a hum.'}},
       {title:'One cue',body:'Alternate line 1 and line 2. Feel the buzz. Do not chase a nasal sound, and do not squeeze.',reps:{20:'Four rounds. A round is line 1 once and line 2 once.',30:'Six rounds.',40:'Eight rounds, then line 3 twice with the same smaller space.'}},
       {title:'Talk',body:'Keep the smaller, brighter space while you talk. Buzz is the cue, not the finished sound.',reps:{20:'Narrate the drive.',30:'Narrate, then one real greeting and one real request.',40:'Narrate, greeting, request, and one short story. Halfway through, two soft glides, then continue.'}},
       DRIVE_CLOSE
     ]},
-    {id:'week-3',week:3,title:'Floor on the road',cue:'Easy middle. The last words do not fall.',lines:['pitch_floor','greeting','phone'],pickCue:false,stop:DRIVE_STOP,blocks:[
+    {id:'week-3',week:3,title:'Floor on the road',cue:'Easy middle. The last words do not fall.',lines:['pitch_floor','greeting','phone'],pickCue:false,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Stay in a modest range. Do not test the top.',reps:{20:'6 easy glides, then settle in the middle.',30:'8 easy glides, then settle in the middle.',40:'8 easy glides, then settle in the middle.'}},
       {title:'One cue',body:'Speak line 1 from that easy middle. Give the last three words enough pitch that they do not drop. No siren.',reps:{20:'Line 1, four times.',30:'Line 1 six times, then line 2 and line 3 once each.',40:'Line 1 eight times, then line 2 and line 3 twice each.'}},
       {title:'Talk',body:'Tell the drive from that same middle. Finish thoughts instead of letting them fall away.',reps:{20:'Narrate the drive.',30:'Narrate, then one real greeting and one real request.',40:'Narrate, greeting, request, and one short story. Halfway through, two soft glides, then find the middle again.'}},
       DRIVE_CLOSE
     ]},
-    {id:'week-4',week:4,title:'Weight on the road',cue:'Light and connected. Light is not whispery.',lines:['weight','transfer','ordering'],pickCue:false,stop:DRIVE_STOP,blocks:[
+    {id:'week-4',week:4,title:'Weight on the road',cue:'Light and connected. Light is not whispery.',lines:['weight','transfer','ordering'],pickCue:false,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Then one yawn-sigh so the throat is not holding.',reps:{20:'6 glides and one yawn-sigh.',30:'8 glides and one yawn-sigh.',40:'8 glides and one yawn-sigh.'}},
       {title:'One cue',body:'Say line 1 once deliberately heavy, reset, then stay light and connected. Do not keep the heavy version.',reps:{20:'One heavy line 1, then light line 1 four times.',30:'One heavy line 1, then light line 1 six times and line 2 once.',40:'One heavy line 1, then light line 1 eight times, line 2 twice, and line 3 once.'}},
       {title:'Talk',body:'Stay on the light connected sound. If you run out of air, use less breathiness rather than a bigger breath.',reps:{20:'Narrate the drive.',30:'Narrate, then one real greeting and one real request.',40:'Narrate, greeting, request, and one short story. Halfway through, two soft glides, then continue light.'}},
       DRIVE_CLOSE
     ]},
-    {id:'week-5',week:5,title:'Melody on the road',cue:'Move one important word. Jaw stays loose.',lines:['melody','articulation','smalltalk'],pickCue:false,stop:DRIVE_STOP,blocks:[
+    {id:'week-5',week:5,title:'Melody on the road',cue:'Move one important word. Jaw stays loose.',lines:['melody','articulation','smalltalk'],pickCue:false,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Loose jaw before the words.',reps:{20:'6 glides.',30:'8 glides.',40:'8 glides.'}},
       {title:'One cue',body:'On line 1, move “really” and “after lunch.” On line 2, keep consonants quick and the jaw loose. Do not get louder to sound clearer.',reps:{20:'Line 1, four times.',30:'Line 1 four times, then line 2 four times.',40:'Line 1 six times, line 2 four times, then line 3 twice.'}},
       {title:'Talk',body:'Move the word that matters. Leave the others closer to center.',reps:{20:'Narrate the drive, with one moved word per thought.',30:'Narrate, then one real greeting and one real request.',40:'Narrate, greeting, request, and one short story. Halfway through, two soft glides, then continue.'}},
       DRIVE_CLOSE
     ]},
-    {id:'week-6',week:6,title:'Transfer on the road',cue:'One cue only: floor, brightness, weight, or ease. No long setup.',lines:['greeting','phone','ordering'],pickCue:true,stop:DRIVE_STOP,blocks:[
+    {id:'week-6',week:6,title:'Transfer on the road',cue:'One cue only: floor, brightness, weight, or ease. No long setup.',lines:['greeting','phone','ordering'],pickCue:true,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Then enter the voice without a long hum.',reps:{20:'6 glides, then line 1 once with no extra setup.',30:'8 glides, then line 1 once with no extra setup.',40:'8 glides, then line 1 once with no extra setup.'}},
-      {title:'One cue',body:'Pick the cue while parked. Say lines 1, 2, and 3 with that cue only.',reps:{20:'Each line twice.',30:'Each line three times.',40:'Each line four times.'}},
+      {title:'One cue',body:'Pick one cue: floor, brightness, weight, or ease. Say lines 1, 2, and 3 with that cue only.',reps:{20:'Each line twice.',30:'Each line three times.',40:'Each line four times.'}},
       {title:'Talk',body:'Use your own words for the same three moments: a greeting, a phone opening, and an order or request.',reps:{20:'One pass through all three.',30:'Two passes. Change a detail the second time.',40:'Two passes, then one short story. Halfway through, two soft glides and re-enter the same cue.'}},
       DRIVE_CLOSE
     ]},
-    {id:'week-7',week:7,title:'Durability on the road',cue:'One cue only. If it slips, two soft glides, then go on.',lines:['greeting','workplace','transfer'],pickCue:true,stop:DRIVE_STOP,blocks:[
+    {id:'week-7',week:7,title:'Durability on the road',cue:'One cue only. If it slips, two soft glides, then go on.',lines:['greeting','workplace','transfer'],pickCue:true,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. This is a warm start, not a test of range.',reps:{20:'6 glides.',30:'8 glides.',40:'8 glides.'}},
-      {title:'One cue',body:'Pick the cue while parked. Do not push the volume over road noise once the throat tightens. Reset, then continue softer.',reps:{20:'Line 1 and line 3, three times each.',30:'Lines 1, 2, and 3, three times each.',40:'Lines 1, 2, and 3, four times each. Two soft glides after the second round.'}},
+      {title:'One cue',body:'Pick one cue: floor, brightness, weight, or ease. If the throat tightens, two soft glides, then continue softer.',reps:{20:'Line 1 and line 3, three times each.',30:'Lines 1, 2, and 3, three times each.',40:'Lines 1, 2, and 3, four times each. Two soft glides after the second round.'}},
       {title:'Talk',body:'Longer speech on the same cue. A slip is a reset, not a reason to press.',reps:{20:'Narrate the drive.',30:'Narrate, then say a real update in your own words.',40:'Narrate, the update, and one short story. Halfway through, two soft glides, then continue.'}},
       DRIVE_CLOSE
     ]},
-    {id:'week-8',week:8,title:'Ownership on the road',cue:'Enter the voice, then let the message lead.',lines:['phone','ordering','maintenance'],pickCue:true,stop:DRIVE_STOP,blocks:[
+    {id:'week-8',week:8,title:'Ownership on the road',cue:'Enter the voice, then let the message lead.',lines:['phone','ordering','maintenance'],pickCue:true,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Choose the one cue you trust before the words.',reps:{20:'6 glides, then name the cue once, silently.',30:'8 glides, then name the cue once, silently.',40:'8 glides, then name the cue once, silently.'}},
       {title:'One cue',body:'Lines 1 and 2 are real-world shapes. Line 3 is the reminder, said once at the end of this block, not as a performance.',reps:{20:'Lines 1 and 2, three times each, then line 3 once.',30:'Lines 1 and 2, four times each, then line 3 once.',40:'Lines 1 and 2, five times each, then line 3 once.'}},
       {title:'Talk',body:'Talk about the week ahead. One opinion, one request, then ordinary narration. Attention stays on the message.',reps:{20:'One opinion and one request.',30:'Opinion, request, and narration of the drive.',40:'Opinion, request, narration, and one short story. Halfway through, two soft glides, then let the message lead again.'}},
       DRIVE_CLOSE
     ]},
-    {id:'maintenance',week:'maintenance',title:'Keep it on the road',cue:'One cue you already trust: floor, brightness, weight, or ease.',lines:['reset','greeting','maintenance'],pickCue:true,stop:DRIVE_STOP,blocks:[
+    {id:'maintenance',week:'maintenance',title:'Keep it on the road',cue:'One cue you already trust: floor, brightness, weight, or ease.',lines:['reset','greeting','maintenance'],pickCue:true,blocks:[
       {title:'Ease',body:'Lip trill or “voo,” never a straw. Hum line 1, then go straight into line 2.',reps:{20:'6 glides, line 1 four times, line 2 twice.',30:'8 glides, line 1 six times, line 2 three times.',40:'8 glides, line 1 six times, line 2 three times.'}},
-      {title:'One cue',body:'Use the cue you picked while parked. No new exercise.',reps:{20:'Your own greeting and your own request, two times each.',30:'Your own greeting and your own request, three times each.',40:'Your own greeting and your own request, four times each.'}},
+      {title:'One cue',body:'Use one cue you already trust: floor, brightness, weight, or ease.',reps:{20:'Your own greeting and your own request, two times each.',30:'Your own greeting and your own request, three times each.',40:'Your own greeting and your own request, four times each.'}},
       {title:'Talk',body:'Ordinary speech for the rest of the time. Line 3 once when you are ready to stop.',reps:{20:'Narrate the drive, then line 3 once.',30:'Narrate, one real update, then line 3 once.',40:'Narrate, one update, and one short story. Halfway through, two soft glides. End on line 3.'}},
       DRIVE_CLOSE
     ]}
