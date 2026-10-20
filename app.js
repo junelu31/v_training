@@ -196,7 +196,11 @@ function renderDrive(){
     const lesson=lessons.find(item=>item.id===id); if(!lesson)return '';
     return `<article class="drive-line"><b>Line ${index+1} · ${escapeHtml(lesson.title)}</b><p>“${escapeHtml(lesson.phrase)}”</p></article>`;
   }).join('');
-  el('driveBlocks').innerHTML=drive.blocks.map((block,index)=>`<article class="settings-card drive-block"><span class="kicker">BLOCK ${index+1} OF ${drive.blocks.length}</span><h2>${escapeHtml(block.title)}</h2><p>${escapeHtml(block.body)}</p><p><b>${escapeHtml(block.reps[driveMinutes])}</b></p></article>`).join('');
+  el('driveBlocks').innerHTML=drive.blocks.map((block,index)=>{
+    const steps=(block.how||[]).map(step=>`<li>${escapeHtml(step)}</li>`).join('');
+    const how=steps?`<details class="drive-how"><summary>How to do this</summary><ol>${steps}</ol></details>`:'';
+    return `<article class="settings-card drive-block"><span class="kicker">BLOCK ${index+1} OF ${drive.blocks.length}</span><h2>${escapeHtml(block.title)}</h2><p>${escapeHtml(block.body)}</p><p><b>${escapeHtml(block.reps[driveMinutes])}</b></p>${how}</article>`;
+  }).join('');
   el('driveTodayDate').textContent=driveDateLabel(); el('driveTodayTitle').textContent=drive.title; el('driveTodayCopy').textContent=drive.cue;
 }
 function saveDriveCheckin(){
