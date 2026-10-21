@@ -531,8 +531,8 @@ function baselineComfortLine(){
   const id=currentResult?.baselineComparison?.id, reference=state.attempts.find(item=>item.id===id);
   if(!Number.isFinite(reference?.comfort))return '';
   const comfort=+el('comfortRating').value, delta=comfort-reference.comfort;
-  const change=delta>0?`${delta} higher`:delta<0?`${Math.abs(delta)} lower`:'the same';
-  return ` Comfort is ${change} than that snapshot (${comfort}/5 now, ${reference.comfort}/5 then).`;
+  const change=delta>0?`${delta} higher than`:delta<0?`${Math.abs(delta)} lower than`:'the same as';
+  return ` Comfort is ${change} that snapshot (${comfort}/5 now, ${reference.comfort}/5 then).`;
 }
 function refreshComfortCue(){
   const comfort=+el('comfortRating').value;
@@ -714,8 +714,10 @@ function renderProgress(){
   const comfort=selfRated.length?(selfRated.reduce((sum,a)=>sum+a.comfort,0)/selfRated.length).toFixed(1):'—',alignment=selfRated.length?(selfRated.reduce((sum,a)=>sum+a.alignment,0)/selfRated.length).toFixed(1):'—';
   const driveMin=driveLogs().reduce((sum,entry)=>sum+(entry.actualMinutes||0),0);
   const fromBaseline=baselineProgressLabel();
-  const blended=at.some(item=>item.baselineComparison);
-  el('statGrid').innerHTML=[['Practice time',`${Math.floor(totalSec/60)+driveMin}m`,`${at.length} saved takes · ${driveMin} drive min`],['Course',`${progress.percent}%`,`${progress.done} of ${progress.total} activities`],['Current streak',`${calculateStreak()} days`,'Consistency over intensity'],['Average score',avg||'—',blended?'Goal band blended with your change':'Distance to the goal band'],['From baseline',fromBaseline.value,fromBaseline.detail],['Average comfort',comfort==='\u2014'?comfort:`${comfort}/5`,'Your rating after each take'],['Sounds like me',alignment==='\u2014'?alignment:`${alignment}/5`,'Your alignment rating']].map(x=>`<div class="stat-card"><span>${escapeHtml(x[0])}</span><strong>${escapeHtml(String(x[1]))}</strong><small>${escapeHtml(x[2])}</small></div>`).join('');
+  const accountBlend=at.some(item=>item.baselineComparison?.source==='account');
+  const phraseBlend=at.some(item=>item.baselineComparison);
+  const averageDetail=accountBlend?'Goal band blended with your baseline':phraseBlend?'Includes change from an earlier take of the same phrase':'Distance to the goal band';
+  el('statGrid').innerHTML=[['Practice time',`${Math.floor(totalSec/60)+driveMin}m`,`${at.length} saved takes · ${driveMin} drive min`],['Course',`${progress.percent}%`,`${progress.done} of ${progress.total} activities`],['Current streak',`${calculateStreak()} days`,'Consistency over intensity'],['Average score',avg||'—',averageDetail],['From baseline',fromBaseline.value,fromBaseline.detail],['Average comfort',comfort==='\u2014'?comfort:`${comfort}/5`,'Your rating after each take'],['Sounds like me',alignment==='\u2014'?alignment:`${alignment}/5`,'Your alignment rating']].map(x=>`<div class="stat-card"><span>${escapeHtml(x[0])}</span><strong>${escapeHtml(String(x[1]))}</strong><small>${escapeHtml(x[2])}</small></div>`).join('');
   const history=[...at.map(attempt=>({kind:'attempt',date:attempt.date,attempt})),...driveLogs().map(drive=>({kind:'drive',date:drive.date,drive}))].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,12);
   el('historyList').innerHTML=history.length?history.map(item=>{
     if(item.kind==='drive'){const routine=window.COURSE_CONTENT.drives.find(drive=>drive.id===item.drive.routineId);return `<div class="history-row"><div><b>Drive · ${escapeHtml(routine?.title||item.drive.routineId)}</b><br><small>${new Date(item.drive.date).toLocaleString()} · no voice score</small></div><b>${item.drive.actualMinutes?`${item.drive.actualMinutes} min`:'Skipped'}</b><small>${item.drive.comfort}/5 comfort</small><small>cue ${escapeHtml(item.drive.cueHeld)}</small><small></small><small></small></div>`}
@@ -727,11 +729,16 @@ function renderProgress(){
 function baselineProgressLabel(){
   const reference=baselineAttempt();
   const preset=presets[state.goal]||presets.balanced;
-  if(!metricSnapshot(reference))return {value:'—',detail:'Record a baseline to see change'};
-  const later=[...state.attempts].reverse().find(item=>item.id!==reference.id&&metricSnapshot(item));
-  if(!later)return {value:'Snapshot',detail:'Record another take to see change'};
-  const delta=Math.round(later.raw.pitch-reference.raw.pitch);
-  return {value:delta>0?`+${delta} Hz`:delta<0?`${delta} Hz`:'0 Hz',detail:describePitchDelta(delta,later.raw.pitch,preset.pitch)};
+  if(metricSnapshot(reference)){
+    const later=[...state.attempts].reverse().find(item=>item.id!==reference.id&&metricSnapshot(item));
+    if(!later)return {value:'Snapshot',detail:'Record another take to see change'};
+    const delta=Math.round(later.raw.pitch-reference.raw.pitch);
+    return {value:delta>0?`+${delta} Hz`:delta<0?`${delta} Hz`:'0 Hz',detail:describePitchDelta(delta,later.raw.pitch,preset.pitch)};
+  }
+  const compared=[...state.attempts].reverse().find(item=>item.baselineComparison&&Number.isFinite(item.baselineComparison.pitchDelta));
+  if(!compared)return {value:'—',detail:'Record a baseline to see change'};
+  const delta=compared.baselineComparison.pitchDelta;
+  return {value:delta>0?`+${delta} Hz`:delta<0?`${delta} Hz`:'0 Hz',detail:`${compared.baselineComparison.message} A Natural voice snapshot will make this the same reference for every drill.`};
 }
 function drawProgressChart(){
   const c=el('progressCanvas'),ctx=c.getContext('2d'),metric=el('chartMetric').value,data=state.attempts.slice(-12).map(a=>metric==='overall'?a.overall:a.scores[metric]); const w=c.width,h=c.height,pad=45;ctx.clearRect(0,0,w,h);el('emptyChart').style.display=data.length?'none':'grid';
