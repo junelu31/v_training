@@ -1,5 +1,5 @@
-import { spectralBalance, scoreBand, validatedOverall } from './voice-metrics.js';
-import { dayOf, escapeHtml, localDayKey, mergeState, selectDrive, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory } from './client-logic.js';
+import { baselineBlendWeight, baselineRelativeScore, blendOverall, describePitchDelta, spectralBalance, scoreBand, validatedOverall } from './voice-metrics.js';
+import { baselineReferences, dayOf, escapeHtml, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory } from './client-logic.js';
 
 const STORAGE_KEY = 'lilt.voice.v1';
 const DB_NAME = 'lilt-recordings';
@@ -15,7 +15,7 @@ const presets = {
 const lessons = window.COURSE_CONTENT.drills;
 const courseWeeks = window.COURSE_CONTENT.weeks;
 
-const defaultState = { goal:'balanced', attempts:[], completed:[], saveAudio:false, rate:.88, voice:'', sessionStarted:null, driveLog:[] };
+const defaultState = { goal:'balanced', attempts:[], completed:[], saveAudio:false, rate:.88, voice:'', sessionStarted:null, driveLog:[], baselineAttemptId:null, pausedSession:null };
 let state = structuredClone(defaultState);
 let account = null, stateVersion = 0, syncQueue = Promise.resolve(), syncFailed = false;
 let authMode = 'login';
@@ -33,9 +33,18 @@ let driveMinutes = 30;
 let persistTimer = null;
 let playbackUrl = null;
 let historyAudioUrl = null;
+let adoptBaseline = false;
+let takeSaved = false;
 const todayKey = localDayKey;
 
-function loadState(){ try { return {...defaultState, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')}; } catch { return {...defaultState}; } }
+function accountState(raw){
+  const next=normalizeState({...structuredClone(defaultState),...(raw&&typeof raw==='object'?raw:{})});
+  if(!Array.isArray(next.driveLog))next.driveLog=[];
+  if(!Array.isArray(next.attempts))next.attempts=[];
+  if(!Array.isArray(next.completed))next.completed=[];
+  return next;
+}
+function loadState(){ try { return accountState(JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')); } catch { return accountState({}); } }
 function pendingKey(){ return `lilt.pending.${account.id}`; }
 function syncMessage(message, failed=false){
   el('syncStatus').textContent=message;
@@ -53,8 +62,7 @@ function rememberPending(){
 }
 async function rebase(){
   const latest=await api('/api/state');
-  const server={...structuredClone(defaultState),...(latest.state||{})};
-  if(!Array.isArray(server.driveLog))server.driveLog=[];
+  const server=accountState(latest.state);
   state=trimHistory(mergeState(server,state));
   stateVersion=latest.version||0;
 }
@@ -108,14 +116,12 @@ function exportProgress(value=state){
 async function enterApp(user){
   account=user;
   const saved=await api('/api/state');
-  const server={...structuredClone(defaultState),...(saved.state||{})};
-  if(!Array.isArray(server.driveLog))server.driveLog=[];
+  const server=accountState(saved.state);
   state=server;stateVersion=saved.version||0;
   let pending;try{pending=JSON.parse(localStorage.getItem(pendingKey())||'null')}catch{}
   let dirty=false;
   if(pending?.state&&typeof pending.state==='object'){
-    state=trimHistory(mergeState(server,pending.state));
-    if(!Array.isArray(state.driveLog))state.driveLog=[];
+    state=accountState(trimHistory(mergeState(server,pending.state)));
     dirty=stableState(state)!==stableState(trimHistory(server));
     if(!dirty)localStorage.removeItem(pendingKey());
   }
@@ -206,14 +212,30 @@ function renderToday(){
   const recent = attemptsThisWeek(); const driveMins=driveMinutesSince(Date.now()-7*864e5); const mins=Math.round(recent.reduce((s,a)=>s+(a.duration||0),0)/60)+driveMins;
   el('weekMinutes').textContent=mins; el('weeklyRing').style.background=`conic-gradient(var(--coral) ${clamp(mins/60*360,0,360)}deg,var(--paper-2) 0deg)`;
   el('weeklySummary').textContent = recent.length ? `${recent.length} saved attempt${recent.length===1?'':'s'} · ${mins} min` : driveMins ? `${driveMins} min from drives` : 'No sessions yet';
-  const scoreCopy = recent.length ? `${Math.round(recent.reduce((s,a)=>s+a.overall,0)/recent.length)} average score. Notice what feels easier before chasing higher numbers.` : 'Your first sample becomes your baseline. Progress is compared with you, not a population.';
+  const scoreCopy = recent.length ? `${Math.round(recent.reduce((s,a)=>s+a.overall,0)/recent.length)} average score. Notice what feels easier before chasing higher numbers.` : 'Scores show distance to your goal until a baseline snapshot is saved.';
   el('weeklyCopy').textContent = driveMins ? `${scoreCopy} ${driveMins} minutes logged from drives this week.` : scoreCopy;
+  renderRestBanner();
   const drive=currentDrive(); el('driveTodayDate').textContent=driveDateLabel(); el('driveTodayTitle').textContent=drive.title; el('driveTodayCopy').textContent=drive.cue;
   el('streakCount').textContent=calculateStreak();
   el('coachNoteTitle').textContent=session.objective;el('coachNoteCopy').textContent=`After this session, ask: ${session.reflection}`;
   document.querySelectorAll('#lessonPath [data-lesson]').forEach(b=>b.onclick=()=>startLesson(b.dataset.lesson,b.dataset.activity));
 }
 
+function renderRestBanner(){
+  const pause=state.pausedSession, known=pause&&lessons.some(lesson=>lesson.id===pause.lesson);
+  const banner=el('restBanner'); if(!banner)return;
+  banner.hidden=!known;
+  if(!known)return;
+  const title=pause.lessonTitle||lessons.find(lesson=>lesson.id===pause.lesson)?.title||'this drill';
+  el('restBannerCopy').textContent=`You paused ${title} because comfort was ${pause.comfort} out of 5. Rest, or resume the same drill when your voice feels ready.`;
+}
+function resumePaused(){
+  const pause=state.pausedSession; if(!pause)return;
+  startLesson(pause.lesson, pause.activity||null);
+}
+function dismissPause(){
+  state.pausedSession=null; persist(); renderToday();
+}
 function attemptsThisWeek(){ const since=Date.now()-7*864e5; return state.attempts.filter(a=>new Date(a.date).getTime()>=since); }
 function calculateStreak(){return streakFromDayKeys([...state.attempts.map(attempt=>dayOf(attempt.date)),...driveLogs().filter(entry=>entry.actualMinutes>0).map(entry=>dayOf(entry.date))])}
 
@@ -434,8 +456,31 @@ function analyzeAttempt(){
   const volumeSpread=20*Math.log10(Math.max(percentile(rmsValues,.75),1e-5)/Math.max(percentile(rmsValues,.25),1e-5)),duration=recordingDurationSeconds||Math.max(1,Math.round((performance.now()-recordingStartedAt)/1000)),pace=heardWords.length?Math.round(heardWords.length/duration*60):null;
   const scores={pitch:Math.round(pitchScore),brightness:Math.round(brightScore),movement:Math.round(moveScore),ease:Math.round(easeScore)};
   const acousticOverall=Math.min(92,Math.round(Object.entries(p.weights).reduce((s,[k,w])=>s+scores[k]*w,0)));
-  return {analysisVersion:4,overall:acousticOverall,acousticOverall,listenerReview:null,scores,raw:{pitch:Math.round(pitch),pitchFloor:Math.round(pitchFloor),pitchCeiling:Math.round(pitchCeiling),pitchCoverage,brightness:+brightness.toFixed(1),brightnessCoverage:spectralCoverage,movement:+movement.toFixed(1),continuity:Math.round(continuity),confidence:+confidence.toFixed(2),endingShift:+endingShift.toFixed(1),volumeSpread:+volumeSpread.toFixed(1),pace},clarity,transcript,duration};
+  const raw={pitch:Math.round(pitch),pitchFloor:Math.round(pitchFloor),pitchCeiling:Math.round(pitchCeiling),pitchCoverage,brightness:+brightness.toFixed(1),brightnessCoverage:spectralCoverage,movement:+movement.toFixed(1),continuity:Math.round(continuity),confidence:+confidence.toFixed(2),endingShift:+endingShift.toFixed(1),volumeSpread:+volumeSpread.toFixed(1),pace};
+  const ranges={pitch:p.pitch,brightness:p.brightness,movement:p.movement};
+  const refs=baselineReferences(state.attempts,{activityId:activeActivityId,lessonId:activeLesson.id});
+  const dedicated=baselineAttempt();
+  const dedicatedComparison=dedicated?metricComparison(dedicated,raw,ranges,'account'):null;
+  const phraseAttempt=refs.phrase&&refs.phrase.id!==dedicated?.id?refs.phrase:null;
+  const phraseComparison=phraseAttempt?metricComparison(phraseAttempt,raw,ranges,'phrase'):null;
+  const baselineComparison=dedicatedComparison||(refs.phrase?metricComparison(refs.phrase,raw,ranges,'phrase'):null);
+  const relative=baselineComparison?.relativeScore;
+  const blendedOverall=blendOverall(acousticOverall,relative,practiceWeek());
+  return {analysisVersion:5,overall:blendedOverall,acousticOverall,blendedOverall,listenerReview:null,scores,raw,clarity,transcript,duration,baselineComparison,phraseComparison};
 }
+function practiceWeek(){return activeActivityId?activityContext(activeActivityId)?.session?.week??null:null}
+function baselineAttempt(){return state.baselineAttemptId?state.attempts.find(item=>item?.id===state.baselineAttemptId)||null:null}
+function metricSnapshot(attempt){
+  const raw=attempt?.raw;
+  if(!raw||![raw.pitch,raw.brightness,raw.movement].every(Number.isFinite))return null;
+  return {pitch:raw.pitch,brightness:raw.brightness,movement:raw.movement};
+}
+function metricComparison(attempt,raw,ranges,source){
+  const snapshot=metricSnapshot(attempt); if(!snapshot)return null;
+  const relativeScore=baselineRelativeScore(snapshot,raw,ranges); if(relativeScore==null)return null;
+  return {source,id:attempt.id,pitchDelta:Math.round(raw.pitch-snapshot.pitch),brightnessDelta:+(raw.brightness-snapshot.brightness).toFixed(1),movementDelta:+(raw.movement-snapshot.movement).toFixed(1),relativeScore,message:describePitchDelta(raw.pitch-snapshot.pitch,raw.pitch,ranges.pitch)};
+}
+function signedMeasure(value,unit){const number=+value; if(!Number.isFinite(number))return ''; const rounded=Number.isInteger(number)?number:+number.toFixed(1); return `${rounded>0?'+':''}${rounded} ${unit}`}
 function normalize(s){return s.toLowerCase().replace(/[^a-z0-9 ]/g,'').split(/\s+/).filter(Boolean)}
 function similarity(a,b){const dp=Array(b.length+1).fill(0);for(let i=1;i<=a.length;i++){let prev=dp[0];dp[0]=i;for(let j=1;j<=b.length;j++){const temp=dp[j];dp[j]=a[i-1]===b[j-1]?prev:1+Math.min(prev,dp[j],dp[j-1]);prev=temp}}return 1-dp[b.length]/Math.max(a.length,b.length,1)}
 
@@ -460,19 +505,64 @@ function renderResults(r){
   const labels={pitch:['Pitch',`${r.raw.pitch} Hz median · ${r.raw.pitchCoverage}% in ${p.pitch[0]}–${p.pitch[1]} Hz target`],brightness:['Spectral balance',`${r.raw.brightness} dB pitch-aware proxy · ${r.raw.brightnessCoverage}% of voiced frames in target`],movement:['Movement',`${r.raw.movement} semitone 10–90% range · target ${p.movement[0]}–${p.movement[1]}`],ease:['Signal control',`${r.raw.continuity}% voiced continuity · ${Math.round(r.raw.confidence*100)}% pitch confidence`]};
   const observations=[['Pitch floor',`${r.raw.pitchFloor} Hz`,r.raw.pitchFloor<p.pitch[0]?'Below target floor':'Within/above target floor'],['Pitch ceiling',`${r.raw.pitchCeiling} Hz`,'90th percentile'],['Phrase ending',`${r.raw.endingShift>0?'+':''}${r.raw.endingShift} st`,'Last fifth versus first fifth'],['Volume variation',`${r.raw.volumeSpread} dB`,'Informational; microphone-dependent'],['Clarity',r.clarity===null?'Not available':`${r.clarity}%`,r.clarity===null?'Browser transcript unavailable':'Phrase-word match'],['Pace',r.raw.pace===null?'Not available':`${r.raw.pace} wpm`,'Informational, not gender-scored']];
   el('scoreBreakdown').innerHTML=Object.entries(r.scores).map(([k,v])=>`<div class="breakdown-row"><div class="breakdown-label"><span>${labels[k][0]}</span><b>${v}</b></div><div class="breakdown-bar"><i style="width:${v}%"></i></div><p>${labels[k][1]}</p></div>`).join('')+`<div class="observation-grid">${observations.map(o=>`<div class="observation"><span>${o[0]}</span><strong>${o[1]}</strong><small>${o[2]}</small></div>`).join('')}</div>`;
-  el('comfortRating').value=3;el('alignmentRating').value=3;el('comfortOutput').textContent='3 / 5';el('alignmentOutput').textContent='3 / 5';el('listenerReview').value='';el('scoreEvidence').textContent='Acoustic-only scores top out at 92. A 100 requires a near-top acoustic score, strong coverage, and consistent feedback from at least three unfamiliar listeners in spontaneous, uncoached conversation. The app cannot determine passing on its own.';
+  el('comfortRating').value=3;el('alignmentRating').value=3;el('comfortOutput').textContent='3 / 5';el('alignmentOutput').textContent='3 / 5';el('listenerReview').value='';
+  adoptBaseline=false; takeSaved=false; el('restPanel').hidden=true; el('saveContinueButton').disabled=false; el('continueAnyway').disabled=false;
+  renderBaselineCopy(); refreshComfortCue();
   cloudTranscript='';wordAnalysis=null;
   el('cloudAnalyzeButton').hidden=!activeActivityId;el('cloudAnalysisNote').hidden=!activeActivityId;
   el('cloudAnalyzeButton').disabled=false;el('cloudAnalyzeButton').textContent='Analyze words with Workers AI';el('wordAnalysisStatus').textContent='';el('wordFindings').innerHTML='';
   el('transcriptText').textContent=recognitionMessage();
 }
+function scoreHeadline(overall){return overall===100?'Strong targets plus outside feedback':overall>=85?'Strong acoustic alignment':overall>=70?'A promising working take':overall>=50?'Useful information':'Let’s simplify the next take'}
+function renderBaselineCopy(){
+  const note=el('baselineNote'); if(!note||!currentResult)return;
+  const comparison=currentResult.baselineComparison;
+  if(!comparison){
+    note.textContent=activeLesson.id==='baseline'&&!state.baselineAttemptId
+      ?'This is a starting snapshot. A comfortable save becomes your baseline, and later scores show change from it. Right now the number is only distance to the goal band.'
+      :'There is no baseline yet, so this number is only distance to the goal band. Save the Natural voice snapshot, or use this take as your baseline.';
+    return;
+  }
+  const source=comparison.source==='account'?'your natural-voice baseline':'your first take of this phrase';
+  const phrase=currentResult.phraseComparison&&currentResult.phraseComparison.id!==comparison.id?` This phrase’s first take: ${currentResult.phraseComparison.message}.`:'';
+  note.textContent=`${comparison.message}. Brightness ${signedMeasure(comparison.brightnessDelta,'dB')} and movement ${signedMeasure(comparison.movementDelta,'st')} versus ${source}.${phrase}${baselineComfortLine()}`;
+}
+function baselineComfortLine(){
+  const id=currentResult?.baselineComparison?.id, reference=state.attempts.find(item=>item.id===id);
+  if(!Number.isFinite(reference?.comfort))return '';
+  const comfort=+el('comfortRating').value, delta=comfort-reference.comfort;
+  const change=delta>0?`${delta} higher`:delta<0?`${Math.abs(delta)} lower`:'the same';
+  return ` Comfort is ${change} than that snapshot (${comfort}/5 now, ${reference.comfort}/5 then).`;
+}
+function refreshComfortCue(){
+  const comfort=+el('comfortRating').value;
+  const lines=[];
+  if(shouldPauseForComfort(comfort))lines.push('You rated this uncomfortable. Saving will pause here so you can rest, instead of starting the next drill.');
+  if((currentResult?.acousticOverall??0)>=70&&shouldPauseForComfort(comfort))lines.push('You rated this uncomfortable. The acoustic score does not outvote your throat.');
+  el('comfortNotice').textContent=lines.join(' ');
+  el('saveContinueButton').textContent=shouldPauseForComfort(comfort)?'Save and rest':'Save & continue';
+  const button=el('baselineButton');
+  button.setAttribute('aria-pressed',adoptBaseline?'true':'false');
+  button.textContent=adoptBaseline?'This take will be your baseline':state.baselineAttemptId?'Update my baseline':'Use this take as my baseline';
+  renderBaselineCopy();
+  writeScoreEvidence();
+}
+function writeScoreEvidence(){
+  if(!currentResult)return;
+  if(currentResult.overall===100){el('scoreEvidence').textContent='All measured dimensions are strong and you reported consistent target perception from at least three unfamiliar listeners. This is supporting evidence, not a guarantee for every listener, context, or day.';return}
+  const band=`Acoustic alignment: ${currentResult.acousticOverall}/92. A score of 100 is reserved for near-top acoustic results plus consistent independent listener feedback; the app cannot determine passing by itself.`;
+  if(!currentResult.baselineComparison){el('scoreEvidence').textContent=`No baseline yet, so the overall number is only distance to the goal band. ${band}`;return}
+  const weight=Math.round(baselineBlendWeight(practiceWeek())*100);
+  el('scoreEvidence').textContent=`The overall blends the goal band with change from your baseline (${weight}% of this score is that change). ${band}`;
+}
 function updateValidatedScore(){
   if(!currentResult)return;
   currentResult.listenerReview=el('listenerReview').value||null;
-  currentResult.overall=validatedOverall(currentResult.acousticOverall,currentResult.scores,{pitch:currentResult.raw.pitchCoverage,spectral:currentResult.raw.brightnessCoverage},currentResult.clarity,currentResult.listenerReview);
+  const validated=validatedOverall(currentResult.acousticOverall,currentResult.scores,{pitch:currentResult.raw.pitchCoverage,spectral:currentResult.raw.brightnessCoverage},currentResult.clarity,currentResult.listenerReview);
+  currentResult.overall=validated===100?100:(currentResult.blendedOverall??currentResult.acousticOverall);
   el('overallScore').textContent=currentResult.overall;
-  el('scoreHeadline').textContent=currentResult.overall===100?'Strong targets plus outside feedback':currentResult.overall>=85?'Strong acoustic alignment':currentResult.overall>=70?'A promising working take':currentResult.overall>=50?'Useful information':'Let’s simplify the next take';
-  el('scoreEvidence').textContent=currentResult.overall===100?'All measured dimensions are strong and you reported consistent target perception from at least three unfamiliar listeners. This is supporting evidence, not a guarantee for every listener, context, or day.':`Acoustic alignment: ${currentResult.acousticOverall}/92. A score of 100 is reserved for near-top acoustic results plus consistent independent listener feedback; the app cannot determine passing by itself.`;
+  el('scoreHeadline').textContent=scoreHeadline(currentResult.overall);
+  writeScoreEvidence();
 }
 
 async function analyzeWordsWithCloud(){
@@ -562,12 +652,52 @@ function buildAdjustments(r){
   return items.sort((a,b)=>b.priority-a.priority)
 }
 
+function completeActiveLesson(){
+  if(activeActivityId&&!activityComplete(activeActivityId))state.completed.push({activity:activeActivityId,lesson:activeLesson.id,date:todayKey()});
+  else if(!activeActivityId)state.completed.push({lesson:activeLesson.id,date:todayKey()});
+}
+function advanceAfterSave(){
+  const context=activeActivityId?activityContext(activeActivityId):null;
+  renderCourse();
+  if(context){const next=context.session.activities.slice(context.index+1).find(item=>!activityComplete(item.id));if(next){startLesson(next.drill,next.id);return}showView('today');return}
+  const idx=lessons.findIndex(item=>item.id===activeLesson.id);startLesson(lessons[(idx+1)%lessons.length].id);
+}
+function showRest(attempt){
+  el('restPanel').hidden=false;
+  const baselineLine=state.baselineAttemptId===attempt.id?' This take is also saved as your baseline.':'';
+  el('restMessage').textContent=`This take is saved. Comfort was ${attempt.comfort} out of 5, so the rest of the session is paused. That is information, not a failed score. Stop for today, or try one easy straw or lip-trill reset. You can resume ${activeLesson.title} whenever your voice feels ready.${baselineLine}`;
+  el('saveContinueButton').disabled=true;
+  el('restHeading').focus();
+}
 async function saveCurrent(){
-  if(!currentResult)return; const id=crypto.randomUUID(),context=activeActivityId?activityContext(activeActivityId):null; const attempt={id,date:new Date().toISOString(),lesson:activeLesson.id,lessonTitle:activeLesson.title,activity:activeActivityId,goal:state.goal,comfort:+el('comfortRating').value,alignment:+el('alignmentRating').value,...currentResult};
-  state.attempts.push(attempt);if(activeActivityId&&!activityComplete(activeActivityId))state.completed.push({activity:activeActivityId,lesson:activeLesson.id,date:todayKey()});else if(!activeActivityId)state.completed.push({lesson:activeLesson.id,date:todayKey()});
-  if(state.saveAudio&&currentBlob)await saveAudio(id,currentBlob);persist({immediate:true});renderCourse();
-  if(context){const next=context.session.activities.slice(context.index+1).find(a=>!activityComplete(a.id));if(next){startLesson(next.drill,next.id);return}showView('today');return}
-  const idx=lessons.findIndex(l=>l.id===activeLesson.id);startLesson(lessons[(idx+1)%lessons.length].id);
+  if(!currentResult||takeSaved)return;
+  const id=crypto.randomUUID(), comfort=+el('comfortRating').value;
+  const attempt={id,date:new Date().toISOString(),lesson:activeLesson.id,lessonTitle:activeLesson.title,activity:activeActivityId,goal:state.goal,comfort,alignment:+el('alignmentRating').value,...currentResult};
+  const reference=state.attempts.find(item=>item.id===attempt.baselineComparison?.id);
+  if(attempt.baselineComparison&&Number.isFinite(reference?.comfort))attempt.baselineComparison.comfortDelta=comfort-reference.comfort;
+  const pausing=shouldPauseForComfort(comfort);
+  if(adoptBaseline||(activeLesson.id==='baseline'&&!state.baselineAttemptId&&!pausing))state.baselineAttemptId=id;
+  state.attempts.push(attempt);
+  takeSaved=true;
+  if(pausing){
+    state.pausedSession={lesson:activeLesson.id,activity:activeActivityId,date:attempt.date,comfort,lessonTitle:activeLesson.title};
+    if(state.saveAudio&&currentBlob)await saveAudio(id,currentBlob);
+    persist({immediate:true}); renderCourse(); renderToday(); showRest(attempt); return;
+  }
+  const samePaused=state.pausedSession&&state.pausedSession.lesson===activeLesson.id&&(state.pausedSession.activity||null)===(activeActivityId||null);
+  if(samePaused)state.pausedSession=null;
+  completeActiveLesson();
+  if(state.saveAudio&&currentBlob)await saveAudio(id,currentBlob);
+  persist({immediate:true});
+  advanceAfterSave();
+}
+function continueAfterRest(){
+  if(!takeSaved||el('continueAnyway').disabled)return;
+  el('continueAnyway').disabled=true;
+  state.pausedSession=null;
+  completeActiveLesson();
+  persist({immediate:true});
+  advanceAfterSave();
 }
 
 function openDB(){return new Promise((resolve,reject)=>{const req=indexedDB.open(`${DB_NAME}-${account.id}`,1);req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains('audio'))req.result.createObjectStore('audio')};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
@@ -583,7 +713,9 @@ function renderProgress(){
   const selfRated=at.filter(a=>Number.isFinite(a.comfort)&&Number.isFinite(a.alignment)),progress=courseProgress();
   const comfort=selfRated.length?(selfRated.reduce((sum,a)=>sum+a.comfort,0)/selfRated.length).toFixed(1):'—',alignment=selfRated.length?(selfRated.reduce((sum,a)=>sum+a.alignment,0)/selfRated.length).toFixed(1):'—';
   const driveMin=driveLogs().reduce((sum,entry)=>sum+(entry.actualMinutes||0),0);
-  el('statGrid').innerHTML=[['Practice time',`${Math.floor(totalSec/60)+driveMin}m`,`${at.length} saved takes · ${driveMin} drive min`],['Course',`${progress.percent}%`,`${progress.done} of ${progress.total} activities`],['Current streak',`${calculateStreak()} days`,'Consistency over intensity'],['Average score',avg||'—','Against chosen presets'],['Average comfort',comfort==='\u2014'?comfort:`${comfort}/5`,'Your rating after each take'],['Sounds like me',alignment==='\u2014'?alignment:`${alignment}/5`,'Your alignment rating']].map(x=>`<div class="stat-card"><span>${x[0]}</span><strong>${x[1]}</strong><small>${x[2]}</small></div>`).join('');
+  const fromBaseline=baselineProgressLabel();
+  const blended=at.some(item=>item.baselineComparison);
+  el('statGrid').innerHTML=[['Practice time',`${Math.floor(totalSec/60)+driveMin}m`,`${at.length} saved takes · ${driveMin} drive min`],['Course',`${progress.percent}%`,`${progress.done} of ${progress.total} activities`],['Current streak',`${calculateStreak()} days`,'Consistency over intensity'],['Average score',avg||'—',blended?'Goal band blended with your change':'Distance to the goal band'],['From baseline',fromBaseline.value,fromBaseline.detail],['Average comfort',comfort==='\u2014'?comfort:`${comfort}/5`,'Your rating after each take'],['Sounds like me',alignment==='\u2014'?alignment:`${alignment}/5`,'Your alignment rating']].map(x=>`<div class="stat-card"><span>${escapeHtml(x[0])}</span><strong>${escapeHtml(String(x[1]))}</strong><small>${escapeHtml(x[2])}</small></div>`).join('');
   const history=[...at.map(attempt=>({kind:'attempt',date:attempt.date,attempt})),...driveLogs().map(drive=>({kind:'drive',date:drive.date,drive}))].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,12);
   el('historyList').innerHTML=history.length?history.map(item=>{
     if(item.kind==='drive'){const routine=window.COURSE_CONTENT.drives.find(drive=>drive.id===item.drive.routineId);return `<div class="history-row"><div><b>Drive · ${escapeHtml(routine?.title||item.drive.routineId)}</b><br><small>${new Date(item.drive.date).toLocaleString()} · no voice score</small></div><b>${item.drive.actualMinutes?`${item.drive.actualMinutes} min`:'Skipped'}</b><small>${item.drive.comfort}/5 comfort</small><small>cue ${escapeHtml(item.drive.cueHeld)}</small><small></small><small></small></div>`}
@@ -591,6 +723,15 @@ function renderProgress(){
   }).join(''):'<p class="privacy-line">No saved attempts yet.</p>';
   document.querySelectorAll('[data-play-attempt]').forEach(button=>button.onclick=()=>playSavedAttempt(button.dataset.playAttempt));
   drawProgressChart();
+}
+function baselineProgressLabel(){
+  const reference=baselineAttempt();
+  const preset=presets[state.goal]||presets.balanced;
+  if(!metricSnapshot(reference))return {value:'—',detail:'Record a baseline to see change'};
+  const later=[...state.attempts].reverse().find(item=>item.id!==reference.id&&metricSnapshot(item));
+  if(!later)return {value:'Snapshot',detail:'Record another take to see change'};
+  const delta=Math.round(later.raw.pitch-reference.raw.pitch);
+  return {value:delta>0?`+${delta} Hz`:delta<0?`${delta} Hz`:'0 Hz',detail:describePitchDelta(delta,later.raw.pitch,preset.pitch)};
 }
 function drawProgressChart(){
   const c=el('progressCanvas'),ctx=c.getContext('2d'),metric=el('chartMetric').value,data=state.attempts.slice(-12).map(a=>metric==='overall'?a.overall:a.scores[metric]); const w=c.width,h=c.height,pad=45;ctx.clearRect(0,0,w,h);el('emptyChart').style.display=data.length?'none':'grid';
@@ -625,7 +766,13 @@ function bindEvents(){
   document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.onclick=()=>showView(n.dataset.view));
   el('goalSelect').onchange=e=>setGoal(e.target.value);el('openDrive').onclick=()=>showView('drive');el('saveDrive').onclick=saveDriveCheckin;el('driveComfort').oninput=e=>{el('driveComfortOutput').textContent=`${e.target.value} / 5`};el('playReference').onclick=speakReference;el('playRamonaReference').onclick=playRamonaReference;el('ramonaClipSelect').onchange=()=>{el('ramonaReference').querySelector('iframe').src='';el('ramonaClipStatus').textContent='Press Play character clip to load this official clip.'};el('recordButton').onclick=toggleRecording;el('exitPractice').onclick=()=>showView('today');el('retryButton').onclick=()=>{resetMeters();showView('practice')};el('saveContinueButton').onclick=saveCurrent;
   el('cloudAnalyzeButton').onclick=analyzeWordsWithCloud;
-  el('comfortRating').oninput=e=>el('comfortOutput').textContent=`${e.target.value} / 5`;el('alignmentRating').oninput=e=>el('alignmentOutput').textContent=`${e.target.value} / 5`;el('listenerReview').onchange=updateValidatedScore;
+  el('comfortRating').oninput=e=>{el('comfortOutput').textContent=`${e.target.value} / 5`;refreshComfortCue()};el('alignmentRating').oninput=e=>el('alignmentOutput').textContent=`${e.target.value} / 5`;el('listenerReview').onchange=updateValidatedScore;
+  el('baselineButton').onclick=()=>{adoptBaseline=!adoptBaseline;refreshComfortCue()};
+  el('restNow').onclick=()=>showView('today');
+  el('easyReset').onclick=()=>startLesson('sovt');
+  el('continueAnyway').onclick=continueAfterRest;
+  el('resumePaused').onclick=resumePaused;
+  el('dismissPause').onclick=dismissPause;
   el('menuButton').onclick=event=>{event.stopPropagation();setMenuOpen(!document.querySelector('.sidebar').classList.contains('open'))};
   el('drawerScrim').onclick=()=>setMenuOpen(false);
   el('privacyButton').onclick=()=>el('modalBackdrop').hidden=false;el('modalClose').onclick=el('modalOkay').onclick=()=>el('modalBackdrop').hidden=true;
@@ -633,7 +780,7 @@ function bindEvents(){
   el('exportData').onclick=()=>exportProgress();
   el('retrySync').onclick=async()=>{syncFailed=false;el('retrySync').disabled=true;try{await rebase()}catch{}await persist({immediate:true});el('retrySync').disabled=false};
   el('loadLatest').onclick=()=>{if(confirm('Discard pending changes on this device and load the latest saved progress? Export a backup in Settings first.')){localStorage.removeItem(pendingKey());location.reload()}};
-  el('importLocal').onclick=()=>{if(confirm('Replace this account’s progress with the previous progress from this browser? Export your current account progress first.')){state=loadState();if(!Array.isArray(state.driveLog))state.driveLog=[];persist({immediate:true});renderAll()}};
+    el('importLocal').onclick=()=>{if(confirm('Replace this account’s progress with the previous progress from this browser? Export your current account progress first.')){state=loadState();persist({immediate:true});renderAll()}};
   el('logoutButton').onclick=async()=>{
     el('logoutButton').disabled=true;
     try{await flushPersist();if(syncFailed)throw new Error('Save or export pending changes before signing out.');await api('/api/auth/logout',{method:'POST'});location.reload()}
@@ -641,7 +788,7 @@ function bindEvents(){
   };
   el('clearHistory').onclick=async()=>{
     if(!confirm('Clear saved scores, course completion, drive check-ins, and recordings stored in this browser?'))return;
-    state.attempts=[];state.completed=[];state.driveLog=[];
+    state.attempts=[];state.completed=[];state.driveLog=[];state.baselineAttemptId=null;state.pausedSession=null;
     if(historyAudioUrl){URL.revokeObjectURL(historyAudioUrl);historyAudioUrl=null}
     const player=el('historyPlayback');player.pause();player.removeAttribute('src');player.hidden=true;el('historyAudioStatus').textContent='';
     persist({immediate:true});renderProgress();renderToday();renderCourse();

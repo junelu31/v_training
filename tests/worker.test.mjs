@@ -36,7 +36,8 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await firstConflict.json()).version, 1);
     const changed = { ...state, goal: 'bright', completed: [{ lesson: 'test', activity: 'w1d1-1', date: '2026-10-04' }], attempts: [{ id: 'test-attempt', date: '2026-10-04T12:00:00Z', lessonTitle: 'Practice', overall: 70, scores: { pitch: 70, brightness: 60, movement: 80, ease: 90 } }] };
     assert.equal((await call('/api/state', 'PUT', { state: changed, version: 1 }, first)).status, 200);
-    assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: { ...changed, driveLog: [] }, version: 2 });
+    const withDefaults = value => ({ baselineAttemptId: null, pausedSession: null, driveLog: [], ...value });
+    assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: withDefaults(changed), version: 2 });
     const secondConflict = await call('/api/state', 'PUT', { state, version: 1 }, first);
     assert.equal(secondConflict.status, 409);
     assert.equal((await secondConflict.json()).version, 2);
@@ -50,7 +51,7 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     const login = await call('/api/auth/login', 'POST', credentials);
     assert.equal(login.status, 200);
     const signedIn = login.headers.get('Set-Cookie').split(';')[0];
-    assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state, { ...changed, driveLog: [] });
+    assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state, withDefaults(changed));
     const ramonaState = { ...changed, goal: 'ramona' };
     assert.equal((await call('/api/state', 'PUT', { state: ramonaState, version: 2 }, signedIn)).status, 200);
     assert.equal((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.goal, 'ramona');
@@ -61,6 +62,19 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: [{ ...driveEntry, actualMinutes: 15 }] }, version: 4 }, signedIn)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: [{ ...driveEntry, cueHeld: 'maybe' }] }, version: 4 }, signedIn)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: Array.from({ length: 501 }, (_, index) => ({ ...driveEntry, id: `drive-${index}` })) }, version: 4 }, signedIn)).status, 400);
+    const legacy = await (await call('/api/state', 'GET', undefined, signedIn)).json();
+    assert.equal(legacy.version, 4);
+    assert.equal(legacy.state.baselineAttemptId, null);
+    assert.equal(legacy.state.pausedSession, null);
+    const pause = { lesson: 'baseline', activity: 'w1d1-2', date: '2026-10-05T12:00:00.000Z', comfort: 1, lessonTitle: 'Natural voice snapshot' };
+    const enriched = { ...driveState, baselineAttemptId: 'test-attempt', pausedSession: pause };
+    assert.equal((await call('/api/state', 'PUT', { state: enriched, version: 4 }, signedIn)).status, 200);
+    const roundTrip = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state;
+    assert.equal(roundTrip.baselineAttemptId, 'test-attempt');
+    assert.deepEqual(roundTrip.pausedSession, pause);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, pausedSession: { ...pause, comfort: 0 } }, version: 5 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, baselineAttemptId: 'x'.repeat(81) }, version: 5 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, pausedSession: { ...pause, lesson: '<bad>' } }, version: 5 }, signedIn)).status, 400);
     const analyze = (headers, body) => mf.dispatchFetch('https://lilt.test/api/analyze', {
       method: 'POST', headers: { Origin: 'https://lilt.test', Cookie: signedIn, 'CF-Connecting-IP': '203.0.113.10', ...headers }, body
     });

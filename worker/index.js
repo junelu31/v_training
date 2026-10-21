@@ -98,7 +98,38 @@ function validateState(state) {
         !['pitch', 'brightness', 'movement', 'ease'].every(key => Number.isFinite(attempt.scores[key]))) throw new HttpError(400, 'Invalid attempt.');
   }
   for (const item of state.completed) if (!item || typeof item.lesson !== 'string' || typeof item.date !== 'string') throw new HttpError(400, 'Invalid completion.');
-  return { goal: state.goal, attempts: state.attempts, completed: state.completed, saveAudio: state.saveAudio, rate: state.rate, voice: state.voice, sessionStarted: state.sessionStarted, driveLog: validateDriveLog(state.driveLog) };
+  return {
+    goal: state.goal,
+    attempts: state.attempts,
+    completed: state.completed,
+    saveAudio: state.saveAudio,
+    rate: state.rate,
+    voice: state.voice,
+    sessionStarted: state.sessionStarted,
+    driveLog: validateDriveLog(state.driveLog),
+    baselineAttemptId: validateBaselineId(state.baselineAttemptId),
+    pausedSession: validatePausedSession(state.pausedSession)
+  };
+}
+
+function validateBaselineId(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string' || value.length > 80) throw new HttpError(400, 'Invalid baseline.');
+  return value;
+}
+
+function validatePausedSession(value) {
+  if (value == null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new HttpError(400, 'Invalid rest pause.');
+  const activity = value.activity ?? null;
+  if (typeof value.lesson !== 'string' || value.lesson.length < 1 || value.lesson.length > 80 ||
+      !(activity === null || (typeof activity === 'string' && activity.length > 0 && activity.length <= 80)) ||
+      typeof value.date !== 'string' || !Number.isFinite(Date.parse(value.date)) ||
+      !Number.isInteger(value.comfort) || value.comfort < 1 || value.comfort > 5 ||
+      (value.lessonTitle != null && (typeof value.lessonTitle !== 'string' || value.lessonTitle.length > 120))) {
+    throw new HttpError(400, 'Invalid rest pause.');
+  }
+  return { lesson: value.lesson, activity, date: value.date, comfort: value.comfort, lessonTitle: value.lessonTitle || '' };
 }
 
 function validateDriveLog(driveLog) {

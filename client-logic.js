@@ -35,6 +35,44 @@ export function mergeState(server, local) {
   };
 }
 
+export const LOW_COMFORT = 2;
+
+export function shouldPauseForComfort(comfort) {
+  return Number.isInteger(comfort) && comfort >= 1 && comfort <= LOW_COMFORT;
+}
+
+export function normalizeState(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const baselineAttemptId = typeof source.baselineAttemptId === 'string' && source.baselineAttemptId.length > 0 && source.baselineAttemptId.length <= 80
+    ? source.baselineAttemptId
+    : null;
+  const pause = source.pausedSession;
+  const activity = pause?.activity ?? null;
+  const pausedSession = pause && typeof pause === 'object' && !Array.isArray(pause) &&
+    typeof pause.lesson === 'string' && pause.lesson.length > 0 && pause.lesson.length <= 80 &&
+    (activity === null || (typeof activity === 'string' && activity.length > 0 && activity.length <= 80)) &&
+    typeof pause.date === 'string' && Number.isFinite(Date.parse(pause.date)) &&
+    Number.isInteger(pause.comfort) && pause.comfort >= 1 && pause.comfort <= 5
+    ? {
+      lesson: pause.lesson,
+      activity,
+      date: pause.date,
+      comfort: pause.comfort,
+      lessonTitle: typeof pause.lessonTitle === 'string' ? pause.lessonTitle.slice(0, 120) : ''
+    }
+    : null;
+  return { ...source, baselineAttemptId, pausedSession };
+}
+
+// Dedicated account baseline first. Otherwise the earliest saved take of the
+// same course activity, or the same lesson when this is open practice.
+export function baselineReferences(attempts, { activityId = null, lessonId = null } = {}) {
+  const list = (Array.isArray(attempts) ? attempts : []).filter(item => item && typeof item.id === 'string' && item.date);
+  const phrase = list.filter(item => activityId ? item.activity === activityId : item.lesson === lessonId)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))[0] || null;
+  return { phrase };
+}
+
 export function trimHistory(value) {
   const source = value && typeof value === 'object' ? value : {};
   const attempts = (Array.isArray(source.attempts) ? source.attempts : []).slice(-MAX_ATTEMPTS).map(attempt => {
@@ -60,7 +98,9 @@ export function trimHistory(value) {
       }
     } else open.push(item);
   }
-  return { ...source, attempts, driveLog, completed: [...course, ...open.slice(-MAX_OPEN_COMPLETIONS)] };
+  const next = { ...source, attempts, driveLog, completed: [...course, ...open.slice(-MAX_OPEN_COMPLETIONS)] };
+  if (next.baselineAttemptId && !attempts.some(item => item?.id === next.baselineAttemptId)) next.baselineAttemptId = null;
+  return next;
 }
 
 export function stableState(value) {

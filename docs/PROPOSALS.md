@@ -1,6 +1,6 @@
 # Proposals
 
-These are proposals only. None of them are implemented in this change. They are ranked by impact versus effort for Lilt as it works in this repository: an eight-week course (`course.js`), browser scoring (`voice-metrics.js`, `app.js`), optional Workers AI word timing (`worker/index.js`), and account progress in D1.
+Voice training items 1 and 2 are implemented. Everything else in this document is still a proposal. Items are ranked by impact versus effort for Lilt as it works in this repository: an eight-week course (`course.js`), browser scoring (`voice-metrics.js`, `app.js`), optional Workers AI word timing (`worker/index.js`), and account progress in D1.
 
 Impact means how much the change would help someone practice or use the app. Effort means how much of the current code and content would have to change. “Low” effort is a focused edit in the files named. “High” effort needs new content, a new data model, or a new loop through the course.
 
@@ -54,7 +54,9 @@ Cap the practice column nearer 800px and put the single next adjustment under th
 
 ## Voice training
 
-### 1. Score change from the user’s baseline, not only distance to a preset band — high impact, medium effort
+### 1. Score change from the user’s baseline, not only distance to a preset band — implemented
+
+Implemented. A comfortable save of the Natural voice snapshot (`course.js` drill `baseline`) stores `baselineAttemptId`. Any results screen can also mark the current take as the baseline, which is how a week-4 or week-8 retake replaces it. The overall blends that change with the preset-band score (`blendOverall()` in `voice-metrics.js`): 75% change in weeks 1–2, 50% in weeks 3–5 and open practice, 25% in weeks 6–8. Results and Progress show the pitch delta, including when there is no baseline yet. A trimmed or missing snapshot falls back to the band score. The original reasoning is below.
 
 `analyzeAttempt()` in `app.js` scores median pitch, spectral balance, movement, and signal control against the selected preset in `presets`, using `scoreBand()` in `voice-metrics.js`. Being near the center of a wide band scores higher than merely entering it, and the acoustic total is capped at 92. A 100 is only `validatedOverall()` when the user also picks “3+ unfamiliar listeners consistently read it as female” — a self-report, not a measured listener test.
 
@@ -62,7 +64,9 @@ The course already has a baseline drill (`course.js`, `baseline`: “Use your or
 
 Store the baseline attempt id on the account state. For early weeks, score “same setup, less effort, cue present.” Move the preset-center score in later, and show the delta (“8 Hz above your baseline, still under this goal’s floor”) in `renderResults()`. Files: `app.js` (`analyzeAttempt`, `renderResults`, `saveCurrent`), `voice-metrics.js`, `course.js` baseline notes.
 
-### 2. Let comfort and strain change what happens next — high impact, medium effort
+### 2. Let comfort and strain change what happens next — implemented
+
+Implemented. Comfort of 1 or 2 saves the take, does not mark the activity complete, and stores `pausedSession` instead of opening the next drill. The results screen explains the pause and offers rest, the straw/lip-trill reset (`sovt`), or continue anyway. Today keeps a resume banner until that drill is saved comfortably, the reminder is dismissed, or history is cleared. A high acoustic score shows that the comfort rating still counts. The original reasoning is below.
 
 After every take the UI asks for comfort and “sounds like me” (`#comfortRating`, `#alignmentRating` in `index.html`). Those numbers are saved on the attempt and averaged on Progress (`renderProgress()`). They do not change the score, the next activity, or whether another take is offered. The safety copy is static: the coach panel says to stop if it hurts (`index.html` `.tip-box`), Settings has a clinical-care note, and drive blocks say to stop if the voice feels rough (`DRIVE_CLOSE` in `course.js`). `saveCurrent()` always advances to the next activity.
 
@@ -118,4 +122,4 @@ Save the chosen aim (the same four aims the week-6 drive already names in `cours
 
 ## Suggested order
 
-Start with the low-effort, high-impact cluster: sign-in layout and contrast, type size, recording status, baseline-relative scoring, and the comfort gate. Those sit in `styles.css`, `index.html`, `app.js`, and `voice-metrics.js` and do not need a new course. Then add one review card and week-weighted scores. Reminders, a mastery gate, and the maintenance plan are worth doing after the score means the right thing.
+Baseline-relative scoring and the comfort pause are in place. The next low-effort, high-impact cluster is still sign-in layout and contrast, type size, and recording status, in `styles.css`, `index.html`, and `app.js`. Then add one review card and week-weighted scores. Reminders, a mastery gate, and the maintenance plan are worth doing after that.

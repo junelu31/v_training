@@ -69,6 +69,16 @@
 
         <section class="view active" id="todayView">
           <div class="eyebrow" id="dateLabel"></div>
+          <div id="restBanner" class="rest-banner" hidden>
+            <span class="kicker">PAUSED FOR COMFORT</span>
+            <h2>Rest before the next drill</h2>
+            <p id="restBannerCopy"></p>
+            <div class="rest-actions">
+              <button class="primary-button" id="resumePaused" type="button">Resume this drill</button>
+              <button class="secondary-button" id="dismissPause" type="button">Dismiss reminder</button>
+            </div>
+          </div>
+
           <div class="hero-row">
             <div>
               <h1>Good <span id="timeGreeting">morning</span>.</h1>
@@ -172,6 +182,8 @@
             <article class="score-card">
               <div class="score-orbit"><strong id="overallScore">—</strong><small>overall</small></div>
               <h2 id="scoreHeadline">Building your voice map</h2>
+              <p id="baselineNote" class="baseline-note"></p>
+              <p id="comfortNotice" class="comfort-notice" role="status" aria-live="polite"></p>
               <p id="scoreFeedback"></p>
               <div class="adjustment-list" id="coachAdjustments"></div>
               <audio id="recordingPlayback" controls></audio>
@@ -181,6 +193,17 @@
                 <label>Sounds like me <output id="alignmentOutput">3 / 5</output><input id="alignmentRating" type="range" min="1" max="5" value="3" /></label>
                 <label class="listener-review">Outside perception <select id="listenerReview" class="full-select"><option value="">Not tested</option><option value="mixed">Mixed or uncertain feedback</option><option value="consistent">3+ unfamiliar listeners consistently read it as female in spontaneous conversation</option></select></label>
                 <p class="score-evidence" id="scoreEvidence"></p>
+                <button class="secondary-button full baseline-action" id="baselineButton" type="button" aria-pressed="false">Use this take as my baseline</button>
+              </div>
+              <div id="restPanel" class="rest-panel" hidden>
+                <span class="kicker">REST</span>
+                <h3 id="restHeading" tabindex="-1">Let’s pause here</h3>
+                <p id="restMessage"></p>
+                <div class="rest-actions">
+                  <button class="primary-button" id="restNow" type="button">Rest for now</button>
+                  <button class="secondary-button" id="easyReset" type="button">Try an easy reset</button>
+                  <button class="secondary-button" id="continueAnyway" type="button">Continue anyway</button>
+                </div>
               </div>
               <div class="result-actions">
                 <button class="secondary-button" id="retryButton">Try again</button>

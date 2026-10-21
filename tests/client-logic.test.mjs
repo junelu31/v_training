@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { dayOf, escapeHtml, localDayKey, mergeState, selectDrive, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory, MAX_ATTEMPTS } from '../client-logic.js';
+import { baselineReferences, dayOf, escapeHtml, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory, MAX_ATTEMPTS } from '../client-logic.js';
 
 const run = promisify(execFile);
 
@@ -55,6 +55,30 @@ test('history keeps the latest takes and drops stored coaching paragraphs', () =
   assert.equal(trimmed.attempts[0].wordAnalysis[0].label, 'Within selected practice bands');
   assert.equal(trimmed.completed.length, 2);
   assert.equal(stableState(trimHistory(trimmed)), stableState(trimmed));
+});
+
+test('missing baseline and pause fields default, and a trimmed snapshot is dropped', () => {
+  const legacy = normalizeState({ goal: 'balanced', attempts: [{ id: 'keep', date: '2026-10-01T00:00:00.000Z' }] });
+  assert.equal(legacy.baselineAttemptId, null);
+  assert.equal(legacy.pausedSession, null);
+  assert.equal(legacy.goal, 'balanced');
+  const pause = { lesson: 'sovt', activity: null, date: '2026-10-21T12:00:00.000Z', comfort: 1, lessonTitle: 'Straw or lip-trill warm-up' };
+  assert.deepEqual(normalizeState({ pausedSession: pause, baselineAttemptId: 'keep' }).pausedSession, pause);
+  assert.equal(normalizeState({ pausedSession: { ...pause, comfort: 0 } }).pausedSession, null);
+  assert.equal(shouldPauseForComfort(1), true);
+  assert.equal(shouldPauseForComfort(2), true);
+  assert.equal(shouldPauseForComfort(3), false);
+  const attempts = [
+    { id: 'first', date: '2026-10-01T00:00:00.000Z', activity: 'w1d1-2', lesson: 'baseline' },
+    { id: 'later', date: '2026-10-02T00:00:00.000Z', activity: 'w1d1-2', lesson: 'baseline' }
+  ];
+  assert.equal(baselineReferences(attempts, { activityId: 'w1d1-2' }).phrase.id, 'first');
+  assert.equal(baselineReferences(attempts, { lessonId: 'other' }).phrase, null);
+  const trimmed = trimHistory({ attempts: attempts.slice(0, 1), baselineAttemptId: 'missing', driveLog: [], completed: [] });
+  assert.equal(trimmed.baselineAttemptId, null);
+  const kept = trimHistory({ attempts, baselineAttemptId: 'later', driveLog: [], completed: [] });
+  assert.equal(kept.baselineAttemptId, 'later');
+  assert.equal(stableState(trimHistory(kept)), stableState(kept));
 });
 
 test('today’s drive follows the course week and maintenance follows completion', () => {
