@@ -442,6 +442,19 @@ export function coachMinutes(elapsedMs) {
   return clamp(Math.round(elapsedMs / 60000), 1, 120);
 }
 
+/** Spoken when the coach starts or resumes. The driver cannot read the screen, so the line is read aloud. */
+export function openingLine(prompt, { resumed = false } = {}) {
+  const lead = resumed ? 'The coach is listening again.' : 'Drive coach is on.';
+  return prompt ? `${lead} Say this: ${prompt}` : `${lead} Talk whenever you are ready.`;
+}
+
+/** Spoken after a judged phrase in line mode: the next line after a clear take, the same line after a cue. */
+export function followUpLine({ prompt, coached = false, tooNoisy = false, next = '' } = {}) {
+  if (tooNoisy || !prompt) return '';
+  if (coached) return `Try it again: ${prompt}`;
+  return next ? `That was clear. Next: ${next}` : '';
+}
+
 export function createCoachSession({
   plannedMinutes = 30,
   routineId = 'week-1',
@@ -575,6 +588,11 @@ export function createCoachSession({
         if (pendingSaves.length > 4) pendingSaves.splice(0, pendingSaves.length - 4);
       }
       return { events, entry };
+    },
+    advance() {
+      if (mode !== 'lines' || !lines.length) return '';
+      lineIndex += 1;
+      return prompt();
     },
     hear(text, at = Date.now()) {
       clock = at;

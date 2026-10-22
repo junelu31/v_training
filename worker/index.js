@@ -373,7 +373,9 @@ async function driveTurn(request, env, db, user) {
   const audioUrl = audio.startsWith('data:') ? audio : `data:audio/wav;base64,${audio}`;
   const transcribe = (async () => {
     try {
-      const nova = await env.AI.run('@cf/deepgram/nova-3', { audio: audioUrl, punctuate: true, smart_format: false });
+      // nova-3 takes the audio as { body, contentType }. A data: URL fails schema validation.
+      const wav = Uint8Array.from(atob(audio.replace(/^data:[^,]*,/, '')), character => character.charCodeAt(0));
+      const nova = await env.AI.run('@cf/deepgram/nova-3', { audio: { body: new Blob([wav]).stream(), contentType: 'audio/wav' }, punctuate: true, smart_format: false });
       const parsed = wordsFromTranscript(nova);
       if (parsed.text) return { ...parsed, model: '@cf/deepgram/nova-3' };
     } catch (error) {

@@ -12,4 +12,6 @@ await build({
   loader: { '.wasm': 'file' }, logLevel: 'info'
 });
 await cp('assets', 'dist/assets', { recursive: true });
+// Pre-rendered Drive coach voice clips (see scripts/voice-lines.mjs).
+await cp('public/voice', 'dist/voice', { recursive: true });
 console.log('Built public assets and browser analysis bundle in dist/');

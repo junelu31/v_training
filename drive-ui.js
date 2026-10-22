@@ -1,7 +1,9 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
-import { classifyUtterance, createCoachSession, matchCommand, parseEar } from './drive-coach.js';
+import { classifyUtterance, createCoachSession, followUpLine, matchCommand, openingLine, parseEar } from './drive-coach.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
+import { planSpeech, voiceKey } from './drive-voice.js';
+import { VOICE_CLIPS } from './drive-voice-clips.js';
 
 export { createDriveSession };
 
@@ -29,6 +31,20 @@ let captureScratch = new Float32Array(0);
 let stayAwake = null;
 let visibilityHandler = null;
 let workletReady = null;
+let judging = false;
+let speechToken = 0;
+const SPEECH_TAIL_MS = 250;
+let levelFrame = 0;
+let levelPeak = 0;
+const TURN_TIMEOUT_MS = 6000;
+// Granting the microphone on iOS switches the audio session, which fires devicechange and
+// can briefly interrupt the AudioContext. Route events inside this window are part of startup.
+const SETTLE_MS = 1500;
+const FLOW_MS = 1200;
+let micOpenedAt = 0;
+let lastFrameAt = 0;
+let starting = false;
+let recovering = null;
 const RAW_MIC = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
 
 function el(id) {
@@ -46,6 +62,24 @@ function show(line, sub = '') {
   if (lastFeedback) guideRetired = true;
   if (guide) guide.hidden = guideRetired;
   if (wasHidden) overlay.focus();
+}
+
+function showHeard(text) {
+  const node = el('coachHeard');
+  if (node) node.textContent = text;
+}
+
+function showLevel(rms) {
+  levelPeak = Math.max(levelPeak, rms);
+  if (levelFrame || typeof requestAnimationFrame !== 'function') return;
+  levelFrame = requestAnimationFrame(() => {
+    levelFrame = 0;
+    const bar = el('coachLevel');
+    // About -50 dBFS reads as empty and -10 dBFS as full.
+    const db = 20 * Math.log10(levelPeak + 1e-9);
+    if (bar) bar.style.transform = `scaleX(${Math.max(0, Math.min(1, (db + 50) / 40)).toFixed(3)})`;
+    levelPeak = 0;
+  });
 }
 
 function showAwake(mode) {
@@ -111,6 +145,9 @@ function ensureContext() {
       if (!session || session.status().stopped || hiddenByPage || userPaused) return;
       if (document.visibilityState === 'hidden') return;
       if (audioContext.state === 'suspended' || audioContext.state === 'interrupted') {
+        // Try to get audio back first. Pause only if it stays down past startup.
+        audioContext.resume().catch(() => {});
+        if (starting || Date.now() - micOpenedAt < SETTLE_MS) return;
         session.interrupt(audioContext.state);
         show('The coach is paused.', 'Audio was interrupted. It resumes when the route is back.');
       } else if (audioContext.state === 'running' && session.status().paused) {
@@ -124,7 +161,7 @@ function ensureContext() {
 
 async function context() {
   const ctx = ensureContext();
-  if (ctx.state === 'suspended') await ctx.resume();
+  if (ctx.state !== 'running') await ctx.resume().catch(() => {});
   const sessionAudio = navigator.audioSession;
   if (sessionAudio && sessionAudio.type !== 'play-and-record') sessionAudio.type = 'play-and-record';
   return ctx;
@@ -154,44 +191,134 @@ async function suspendAudio() {
   if (audioContext && audioContext.state === 'running') await audioContext.suspend();
 }
 
-async function playSpeech(buffer, mime) {
-  const ctx = await context();
-  speaking = true;
-  detector?.setSpeaking(true);
-  const url = URL.createObjectURL(new Blob([buffer], { type: mime || 'audio/mpeg' }));
-  if (!player) player = new Audio();
-  player.src = url;
-  try {
-    await player.play();
-    await new Promise(resolve => { player.onended = resolve; player.onerror = resolve; });
-  } catch { /* device speech is the fallback */ }
-  URL.revokeObjectURL(url);
-  player.removeAttribute('src');
-  speaking = false;
-  detector?.setSpeaking(false);
-  if (ctx.state === 'suspended' && !hiddenByPage) await ctx.resume();
+// One audio element plays every spoken line. The Start tap plays the first clip on it,
+// which unlocks it on iOS for the rest of the session.
+function audioElement() {
+  if (!player) {
+    player = new Audio();
+    player.preload = 'auto';
+    player.setAttribute('playsinline', '');
+  }
+  return player;
 }
 
-function speakLocal(text) {
-  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return Promise.resolve();
-  speaking = true;
-  detector?.setSpeaking(true);
+// Fragment keys start with ~ and are already normalized.
+function clipUrl(key) {
+  return VOICE_CLIPS[key.startsWith('~') ? key : voiceKey(key)];
+}
+
+function hasClip(key) {
+  return Boolean(clipUrl(key));
+}
+
+// Resolves true when the URL played to the end and false when it failed or was cut off.
+function playUrl(url) {
+  const audio = audioElement();
+  audio.src = url;
+  let started;
+  try { started = audio.play(); } catch { return Promise.resolve(false); }
+  return Promise.resolve(started).then(() => new Promise(resolve => {
+    const done = ok => {
+      audio.onended = audio.onerror = audio.onpause = null;
+      resolve(ok);
+    };
+    audio.onended = () => done(true);
+    audio.onerror = () => done(false);
+    audio.onpause = () => done(audio.ended);
+  }), () => false);
+}
+
+// Device speech, used only for a line without a clip when cloud speech is unavailable.
+function speakDevice(text) {
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return Promise.resolve(false);
   return new Promise(resolve => {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-US';
     utterance.rate = 0.95;
-    utterance.onend = utterance.onerror = () => { speaking = false; detector?.setSpeaking(false); resolve(); };
-    window.speechSynthesis.cancel();
+    let settled = false;
+    // iOS sometimes never fires end. Without a limit the coach would stop listening for good.
+    const limit = setTimeout(() => finish(true), 3000 + text.split(/\s+/).length * 600);
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(limit);
+      resolve(ok);
+    }
+    utterance.onend = () => finish(true);
+    utterance.onerror = () => finish(false);
     window.speechSynthesis.speak(utterance);
   });
+}
+
+// A silent utterance inside the tap lets later device speech play on iOS.
+function primeDeviceSpeech() {
+  if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return;
+  const utterance = new SpeechSynthesisUtterance(' ');
+  utterance.volume = 0;
+  window.speechSynthesis.speak(utterance);
+}
+
+function stopSpeech() {
+  speechToken += 1;
+  if (player && !player.paused) player.pause();
+  window.speechSynthesis?.cancel();
+}
+
+async function playPart(part, token) {
+  if (part.clip) {
+    if (await playUrl(clipUrl(part.clip))) return true;
+    return token === speechToken && speakDevice(part.clip.replace(/^~/, ''));
+  }
+  // A line that names a word or a count is built at runtime. Cloud speech uses a similar voice.
+  const bytes = await cloudSpeech(part.text);
+  if (token !== speechToken) return false;
+  if (bytes) {
+    const url = URL.createObjectURL(new Blob([bytes.body], { type: bytes.mime || 'audio/mpeg' }));
+    const played = await playUrl(url);
+    URL.revokeObjectURL(url);
+    if (played) return true;
+    if (token !== speechToken) return false;
+  }
+  return speakDevice(part.text);
+}
+
+async function runPlan(plan, token) {
+  let ok = true;
+  for (const part of plan) {
+    if (token !== speechToken) return false;
+    ok = (await playPart(part, token)) && ok;
+  }
+  return ok && token === speechToken;
+}
+
+/**
+ * Speaks a line, interrupting whatever is playing. Turn detection stays off while it
+ * plays and for a short tail, so the coach does not hear itself. The first clip starts
+ * synchronously, so a call from the Start tap counts as the user gesture.
+ * Resolves true when the whole line played.
+ */
+function speak(text) {
+  if (!text) return Promise.resolve(true);
+  stopSpeech();
+  const token = speechToken;
+  speaking = true;
+  detector?.setSpeaking(true);
+  return runPlan(planSpeech(text, hasClip), token).then(ok => new Promise(resolve => {
+    setTimeout(() => {
+      if (token === speechToken) {
+        speaking = false;
+        detector?.setSpeaking(false);
+        if (audioContext && audioContext.state === 'suspended' && !hiddenByPage) audioContext.resume().catch(() => {});
+      }
+      resolve(ok);
+    }, SPEECH_TAIL_MS);
+  }));
 }
 
 async function say(text) {
   if (!text) return;
   show(text, session?.prompt() || '');
-  const bytes = await cloudSpeech(text);
-  if (bytes) await playSpeech(bytes.body, bytes.mime);
-  else await speakLocal(text);
+  await speak(text);
 }
 
 function fetchWithTimeout(url, options, ms = 2500) {
@@ -245,14 +372,15 @@ function wavBase64(samples, sampleRate) {
   return btoa(binary);
 }
 
-async function cloudTurn(samples, sampleRate, line) {
+async function cloudTurn(samples, sampleRate) {
   try {
     const response = await fetchWithTimeout('/api/drive/turn', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audioBase64: wavBase64(samples, sampleRate), say: line })
-    });
+      // The reply's speech is never played, so do not ask the Worker to synthesize it.
+      body: JSON.stringify({ audioBase64: wavBase64(samples, sampleRate), say: '' })
+    }, TURN_TIMEOUT_MS);
     if (!response.ok) return null;
     return response.json();
   } catch { return null; }
@@ -315,8 +443,18 @@ export function reviewLiveTurn(turn, coachSession, { goal, at = Date.now(), prom
 }
 
 async function onTurn(turn) {
-  if (!session || speaking || hiddenByPage) return;
+  if (!session || speaking || judging || hiddenByPage || (session.status().paused && !userPaused)) return;
+  judging = true;
+  try {
+    await judgeTurn(turn);
+  } finally {
+    judging = false;
+  }
+}
+
+async function judgeTurn(turn) {
   const prompt = session.prompt();
+  showHeard('Heard you.');
   const local = classifyUtterance({
     analysis: turn,
     prompt,
@@ -330,8 +468,8 @@ async function onTurn(turn) {
     lastFeedback = localText;
     show(localText, prompt || '');
   }
-  const voicePromise = localText && !statusRepeat ? speakLocal(localText) : Promise.resolve();
-  const cloud = await cloudTurn(turn.samples, turn.sampleRate, localText);
+  const voicePromise = localText && !statusRepeat ? speak(localText) : Promise.resolve();
+  const cloud = await cloudTurn(turn.samples, turn.sampleRate);
   if (!session || hiddenByPage || session.status().stopped) {
     await voicePromise;
     return;
@@ -382,14 +520,25 @@ async function onTurn(turn) {
     if (event.text && event.text !== localText) await say(event.text);
   }
   if (noted.events.some(event => event.type === 'feedback')) checkpoint();
+  const coached = Boolean(judged.feedback?.spoken);
+  const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
+  const asked = noted.events.some(event => event.type === 'comfort-check' || event.type === 'rest');
+  const next = !coached && !tooNoisy && !asked ? session.advance() : '';
+  const follow = asked ? '' : followUpLine({ prompt: session.prompt(), coached, tooNoisy, next });
+  showHeard(coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : 'Heard you. That was clear.');
   show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback);
+  if (follow && !session.status().stopped && !hiddenByPage) await say(follow);
 }
 
 function pushCaptured(input, ctx) {
+  lastFrameAt = Date.now();
   const copy = new Float32Array(input.length);
   copy.set(input);
   const samples = ctx.sampleRate === SAMPLE_RATE ? copy : resampleLinear(copy, ctx.sampleRate, SAMPLE_RATE);
   detector?.push(samples);
+  let sum = 0;
+  for (let i = 0; i < copy.length; i++) sum += copy[i] * copy[i];
+  showLevel(Math.sqrt(sum / (copy.length || 1)));
 }
 
 async function attachCapture(ctx, generation) {
@@ -431,13 +580,59 @@ async function listen(alreadyOpen) {
     stream = null;
     return;
   }
+  micOpenedAt = Date.now();
   await attachCapture(ctx, generation);
-  stream.getAudioTracks()[0].addEventListener('ended', () => {
+  const track = stream.getAudioTracks()[0];
+  track.addEventListener('ended', () => {
     if (generation !== micGeneration || hiddenByPage || !session || session.status().stopped) return;
-    session.interrupt('mic-ended');
-    el('coachResume').hidden = false;
-    show('The microphone stopped.', 'Tap to continue.');
+    recover();
   });
+  // iOS mutes the track during a call or Siri and unmutes it afterward. The capture graph survives that.
+  track.addEventListener('unmute', () => {
+    if (generation !== micGeneration || !audioContext) return;
+    audioContext.resume().catch(() => {});
+  });
+}
+
+function micLive() {
+  const track = stream?.getAudioTracks?.()[0];
+  return Boolean(track && track.readyState === 'live' && track.enabled);
+}
+
+async function framesFlowing(since, ms = FLOW_MS) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (lastFrameAt > since) return true;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return lastFrameAt > since;
+}
+
+// Rebuild capture without asking the driver to tap. If iOS refuses a new microphone
+// outside a gesture, fall back to the tap.
+function recover() {
+  if (recovering || !session || session.status().stopped || hiddenByPage || userPaused || fileTest) return recovering;
+  recovering = (async () => {
+    try {
+      const since = Date.now();
+      if (!micLive()) await listen();
+      else await context();
+      if (!(await framesFlowing(since))) {
+        await listen();
+        if (!(await framesFlowing(Date.now()))) throw new Error('No microphone frames');
+      }
+      if (session.status().paused) session.resumeAfterInterrupt();
+      el('coachResume').hidden = true;
+      show(session.prompt() || 'The coach is listening.', lastFeedback);
+    } catch {
+      session?.interrupt('mic-ended');
+      el('coachResume').hidden = false;
+      show('The microphone stopped.', 'Tap to continue.');
+    } finally {
+      recovering = null;
+    }
+  })();
+  return recovering;
 }
 
 function presenceArgs() {
@@ -486,6 +681,9 @@ export function mountDriveCoach(deps) {
   fileTest = new URLSearchParams(location.search).has('coachTest');
   el('coachTestRow').hidden = !fileTest;
   const clicked = () => {
+    const resumed = Boolean(session && !session.status().stopped);
+    ensureSession();
+    const opening = openingLine(session.prompt(), { resumed });
     const ctx = ensureContext();
     let resumePromise;
     try { resumePromise = ctx.resume(); } catch (error) { resumePromise = Promise.reject(error); }
@@ -496,12 +694,17 @@ export function mountDriveCoach(deps) {
       catch (error) { micPromise = Promise.reject(error); }
     }
     const ready = ensureStayAwake().arm();
+    const spoken = speak(opening);
+    primeDeviceSpeech();
     const overlay = el('coachOverlay');
     if (overlay) {
       overlay.hidden = false;
       overlay.focus();
     }
-    begin(ready, micPromise).catch(error => show('The microphone is needed.', error.message || 'Allow the microphone, then tap to continue.'));
+    begin(ready, micPromise, { opening, spoken }).catch(error => {
+      el('coachResume').hidden = false;
+      show('The microphone is needed.', error.message || 'Allow the microphone, then tap to continue.');
+    });
   };
   el('startCoach').onclick = clicked;
   el('coachResume').onclick = clicked;
@@ -511,15 +714,10 @@ export function mountDriveCoach(deps) {
   };
   bindVisibility();
   navigator.mediaDevices?.addEventListener?.('devicechange', () => {
-    if (!session || session.status().stopped || hiddenByPage) return;
-    const track = stream?.getAudioTracks?.()[0];
-    if (!track || track.readyState === 'ended') {
-      el('coachResume').hidden = false;
-      show('The microphone stopped.', 'The audio route changed. Tap to continue.');
-      return;
-    }
-    context().then(ctx => ctx.resume()).catch(() => {});
-    show(session.prompt() || 'The coach is listening.', 'The audio route changed.');
+    if (!session || session.status().stopped || hiddenByPage || userPaused) return;
+    // The permission grant itself changes the route while the microphone is still opening.
+    if (starting || !stream || Date.now() - micOpenedAt < SETTLE_MS) return;
+    recover();
   });
   window.addEventListener('online', () => {
     const flushed = session?.flushSaves(true);
@@ -537,34 +735,49 @@ export function mountDriveCoach(deps) {
   };
 }
 
-async function begin(ready, micPromise = null) {
+function ensureSession() {
+  if (session && !session.status().stopped) return session;
+  session = createCoachSession({
+    plannedMinutes: savedDeps.getPlanned(),
+    routineId: savedDeps.getRoutine(),
+    lines: savedDeps.getLines(),
+    now: Date.now()
+  });
+  detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
+  awaitingComfort = false;
+  lastFeedback = '';
+  statusHeld = false;
+  guideRetired = false;
+  judging = false;
+  showHeard('');
+  const guide = el('coachGuide');
+  if (guide) guide.hidden = false;
+  return session;
+}
+
+async function begin(ready, micPromise = null, { opening = '', spoken = null } = {}) {
   bindVisibility();
   const mode = await ready;
   showAwake(mode);
   userPaused = false;
-  if (!session || session.status().stopped) {
-    const lines = savedDeps.getLines();
-    session = createCoachSession({
-      plannedMinutes: savedDeps.getPlanned(),
-      routineId: savedDeps.getRoutine(),
-      lines,
-      now: Date.now()
-    });
-    detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
-    awaitingComfort = false;
-    lastFeedback = '';
-    statusHeld = false;
-    guideRetired = false;
-    const guide = el('coachGuide');
-    if (guide) guide.hidden = false;
-  } else if (session.status().paused) {
-    session.resumeAfterInterrupt();
-  }
+  ensureSession();
+  if (session.status().paused) session.resumeAfterInterrupt();
   hiddenByPage = false;
   el('coachResume').hidden = true;
   show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback || 'I am listening.');
-  if (!fileTest) await listen(micPromise ? await micPromise : null);
-  else await context();
+  starting = true;
+  try {
+    if (!fileTest) {
+      const since = Date.now();
+      await listen(micPromise ? await micPromise : null);
+      if (!(await framesFlowing(since))) await listen();
+      if (!(await framesFlowing(Date.now()))) throw new Error('The microphone is open but not sending sound. Tap to continue.');
+    } else await context();
+  } finally {
+    starting = false;
+  }
+  // Opening the microphone can cut off speech on iOS. If the opening line did not finish, say it again.
+  if (opening && spoken && !(await spoken) && session && !session.status().stopped && !hiddenByPage) await speak(opening);
 }
 
 async function consumeFile(file, ready) {
