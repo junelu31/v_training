@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, statSync, existsSync } from 'node:fs';
 import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
 import { SESSION_LINES } from '../drive-session.js';
-import { followUpLine, openingLine } from '../drive-coach.js';
+import { createCoachSession, followUpLine, openingLine } from '../drive-coach.js';
 import { COACH_LINES, clipFile, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
 import { VOICE_CLIPS } from '../drive-voice-clips.js';
 
@@ -63,6 +63,33 @@ test('the summary is stitched up to 199 phrases and falls back above that', () =
   assert.ok(planSpeech('199 phrases. 150 held, 49 had a note.', has).every(part => part.clip));
   assert.deepEqual(planSpeech('240 phrases. 200 held, 40 had a note.', has), [{ text: '240 phrases. 200 held, 40 had a note.' }]);
   assert.deepEqual(planSpeech('Zebra dropped.', has), [{ text: 'Zebra dropped.' }], 'an unknown word sends the whole part to one fallback voice');
+});
+
+test('command replies play entirely from Bella clips', () => {
+  const phrase = phrases[0];
+  const lines = [phrase, phrases[1] || phrase];
+  const replies = [];
+  const fresh = () => createCoachSession({ lines, now: 0 });
+  let session = fresh();
+  replies.push(session.command('next').say);
+  session = fresh();
+  replies.push(session.command('repeat').say);
+  session = fresh();
+  replies.push(session.command('pause').say);
+  replies.push(session.command('resume').say);
+  session = fresh();
+  replies.push(session.command('stop').say);
+  session = fresh();
+  replies.push(session.command('summary').say);
+  session = fresh();
+  replies.push(session.command('free').say);
+  session = fresh();
+  session.command('free');
+  replies.push(session.command('lines').say);
+  for (const say of replies) {
+    const plan = planSpeech(say, has);
+    assert.ok(plan.length > 0 && plan.every(part => part.clip), `a command reply would leave Bella: ${say} ${JSON.stringify(plan)}`);
+  }
 });
 
 test('all clips together stay under 4 MB', () => {

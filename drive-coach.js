@@ -418,20 +418,124 @@ export function classifyUtterance({ analysis, prompt, goal, ear, previousWords =
   return { tooNoisy, words, feedback, profile, confident, cleared };
 }
 
-const COMMANDS = [
-  { name: 'next', pattern: /^(next|skip)$/ },
-  { name: 'repeat', pattern: /^(repeat|again)$/ },
-  { name: 'pause', pattern: /^pause$/ },
-  { name: 'stop', pattern: /^(stop|finish|done)$/ },
-  { name: 'resume', pattern: /^(start|resume|continue)$/ },
-  { name: 'summary', pattern: /^(how am i doing|how am i doing\?)$/ },
-  { name: 'free', pattern: /^(free talk|free)$/ },
-  { name: 'lines', pattern: /^(lines|prompts|back to lines)$/ }
+// Whole utterances only. A longer practice sentence is not a command, even if it
+// contains one of these words. Fillers are removed before the lookup.
+const COACH_COMMANDS = [
+  { name: 'next', phrases: [
+    'next', 'skip', 'next phrase', 'next one', 'next line',
+    'skip this', 'skip it', 'skip this one', 'skip this phrase', 'skip this line',
+    'skip the phrase', 'skip the line', 'skip ahead',
+    'go next', 'go to the next', 'go to the next one', 'go to the next phrase', 'go to the next line',
+    'do next', 'do the next', 'do the next one', 'do the next phrase', 'do the next line',
+    'on to the next', 'on to the next one', 'on to the next phrase',
+    'onto the next', 'onto the next one', 'onto the next phrase',
+    'move on', 'move on to the next', 'move on to the next one', 'move on to the next phrase',
+    'give me the next', 'give me the next one', 'give me the next phrase', 'give me the next line'
+  ]},
+  { name: 'repeat', phrases: [
+    'repeat', 'again', 'repeat that', 'repeat it', 'repeat this',
+    'repeat the phrase', 'repeat the line', 'repeat the prompt',
+    'say it again', 'say that again', 'say this again',
+    'say it one more time', 'say that one more time', 'say this one more time',
+    'say the phrase again', 'say the line again',
+    'one more time', 'once more', 'one more',
+    'do it again', 'do that again', 'try again', 'try it again', 'try that again',
+    'try that one more time', 'come again', 'read it again', 'say that once more'
+  ]},
+  { name: 'pause', phrases: [
+    'pause', 'pause the coach', 'pause coach', 'hold on', 'hang on',
+    'wait', 'wait a second', 'wait a minute', 'wait a moment',
+    'pause for a second', 'pause for a minute', 'pause for a moment',
+    'take a break', 'give me a second', 'give me a minute'
+  ]},
+  { name: 'stop', phrases: [
+    'stop', 'finish', 'done', 'stop the coach', 'stop coach', 'stop the session',
+    'end the coach', 'end the session', 'finish the coach', 'finish up', 'stop for now',
+    'save and stop', "i'm done", 'i am done', 'im done',
+    "i'm finished", 'i am finished', 'im finished',
+    "i'm done for now", 'i am done for now', 'done for now',
+    "that's enough", 'thats enough', 'that is enough',
+    "we're done", 'we are done', 'were done', "i'm stopping"
+  ]},
+  { name: 'resume', phrases: [
+    'resume', 'start', 'continue', 'keep going', 'start again',
+    'resume the coach', 'continue the coach', 'start the coach', 'unpause',
+    "i'm ready", 'i am ready', 'im ready', 'ready',
+    "let's go", 'lets go', 'go ahead', "i'm back", 'i am back', 'im back'
+  ]},
+  { name: 'summary', phrases: [
+    'how am i doing', 'how am i doing so far', 'how am i doing today', 'how am i',
+    "how's it going", 'hows it going', 'how is it going', "how's it going so far", 'hows it going so far',
+    'how did i do', 'how did that go',
+    "what's my progress", 'whats my progress', 'what is my progress', 'how is my voice'
+  ]},
+  { name: 'free', phrases: [
+    'free talk', 'free', 'free talk mode', "let's talk", 'lets talk',
+    "let's just talk", 'lets just talk', 'just talk', 'open talk'
+  ]},
+  { name: 'lines', phrases: [
+    'lines', 'prompts', 'back to lines', 'back to the lines',
+    'back to prompts', 'back to the prompts', 'back to the phrases', 'back to phrases',
+    'line mode', 'practice lines'
+  ]}
 ];
 
-export function matchCommand(text, { paused = false } = {}) {
-  const normalized = String(text || '').toLowerCase().replace(/[^a-z\s?]/g, ' ').replace(/\s+/g, ' ').trim();
-  const found = COMMANDS.find(command => command.pattern.test(normalized));
+const COMMAND_PHRASE_SETS = COACH_COMMANDS.map(command => ({ name: command.name, phrases: new Set(command.phrases) }));
+const LEADING_FILLER = new Set(['okay', 'ok', 'um', 'uh', 'uhh', 'umm', 'er', 'ah', 'hmm', 'mm', 'please', 'coach', 'hey', 'so', 'well', 'now', 'yeah', 'yep', 'just', 'like', 'alright', 'right']);
+const TRAILING_FILLER = new Set(['okay', 'ok', 'um', 'uh', 'uhh', 'umm', 'er', 'ah', 'hmm', 'mm', 'please', 'hey', 'so', 'well', 'now', 'yeah', 'yep', 'just', 'like', 'alright', 'right']);
+const POLITE_PREFIX = /^(?:can you|could you|would you|will you|can we|could we|would we|let's|lets|let us)\s+/;
+
+export function normalizeCommandText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[^a-z'\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function commandCandidates(normalized) {
+  const found = new Set();
+  let words = normalized.split(' ').filter(Boolean);
+  for (let step = 0; step < 8 && words.length; step += 1) {
+    found.add(words.join(' '));
+    let next = words.slice();
+    while (next.length && LEADING_FILLER.has(next[0])) next.shift();
+    while (next.length && TRAILING_FILLER.has(next[next.length - 1])) next.pop();
+    const stripped = next.join(' ').replace(POLITE_PREFIX, '');
+    next = stripped ? stripped.split(' ') : [];
+    if (next.join(' ') === words.join(' ')) break;
+    words = next;
+  }
+  found.delete('');
+  return found;
+}
+
+function isPromptReading(said, prompt) {
+  const expected = normalizeCommandText(prompt);
+  if (!said || !expected) return false;
+  if (said === expected) return true;
+  const saidWords = said.split(' ').filter(Boolean);
+  const expectedWords = expected.split(' ').filter(Boolean);
+  if (expectedWords.length >= 3 && expected.includes(said) && saidWords.length >= 4) return true;
+  if (saidWords.length >= 4 && said.includes(expected)) return true;
+  if (saidWords.length < 4 || expectedWords.length < 4) return false;
+  const expectedSet = new Set(expectedWords);
+  const overlap = saidWords.filter(word => expectedSet.has(word)).length;
+  return overlap / saidWords.length >= 0.8 && overlap / expectedWords.length >= 0.6;
+}
+
+/**
+ * Matches one spoken command. Fillers such as "okay", "um", "please", and "coach"
+ * can sit around it, and punctuation or casing from the transcript does not matter.
+ * The whole utterance has to be the command. Reading the current prompt aloud is
+ * practice, even when that line contains "next" or "stop".
+ */
+export function matchCommand(text, { paused = false, prompt = '' } = {}) {
+  const normalized = normalizeCommandText(text);
+  if (!normalized || isPromptReading(normalized, prompt)) return null;
+  const options = commandCandidates(normalized);
+  const found = COMMAND_PHRASE_SETS.find(command => [...options].some(option => command.phrases.has(option)));
   if (!found) return null;
   if (found.name === 'resume' && !paused) return null;
   return found.name;
@@ -596,7 +700,7 @@ export function createCoachSession({
     },
     hear(text, at = Date.now()) {
       clock = at;
-      const command = matchCommand(text, { paused });
+      const command = matchCommand(text, { paused, prompt: prompt() });
       if (!command) return { type: 'speech', text };
       return this.command(command, at);
     },

@@ -452,6 +452,124 @@ async function onTurn(turn) {
   }
 }
 
+/**
+ * Decides what to say once the transcript is in. A command does the command and
+ * returns only its short reply, so phrase feedback is not spoken for it.
+ * An empty transcript means transcription failed or timed out: the take is coached
+ * from the audio, and no command is guessed.
+ */
+export function planCoachTurn({
+  session: coachSession,
+  turn,
+  heard = '',
+  ear = null,
+  goal = {},
+  at = Date.now(),
+  awaitingComfort: waitingForComfort = false,
+  statusHeld: noisyStatusHeld = false,
+  local = null
+}) {
+  const prompt = coachSession.prompt();
+  const prepared = local || classifyUtterance({
+    analysis: turn,
+    prompt,
+    goal,
+    cursor: coachSession.status().cursor
+  });
+  const localText = spokenLine(turn, prepared);
+  const command = matchCommand(heard, { paused: coachSession.status().paused, prompt });
+  if (command) {
+    const result = coachSession.command(command, at);
+    return {
+      type: 'command',
+      command,
+      result,
+      feedbackText: '',
+      extra: [],
+      follow: '',
+      say: result.say || '',
+      heardLine: 'Heard you.',
+      awaitingComfort: waitingForComfort,
+      statusHeld: noisyStatusHeld,
+      checkpoint: false,
+      showLine: '',
+      showSub: ''
+    };
+  }
+  if (waitingForComfort) {
+    const comfort = coachSession.comfortReply(heard || prompt, at);
+    if (comfort?.say) {
+      return {
+        type: 'comfort',
+        result: comfort,
+        feedbackText: '',
+        extra: [],
+        follow: '',
+        say: comfort.say,
+        heardLine: 'Heard you.',
+        awaitingComfort: false,
+        statusHeld: noisyStatusHeld,
+        checkpoint: false,
+        showLine: '',
+        showSub: ''
+      };
+    }
+  }
+  const judged = ear ? classifyUtterance({
+    analysis: turn,
+    prompt: heard || prompt,
+    goal,
+    ear,
+    cursor: coachSession.status().cursor
+  }) : prepared;
+  const heardText = spokenLine(turn, judged) || localText;
+  if (judged.feedback) judged.feedback = { ...judged.feedback, text: heardText, spoken: Boolean(heardText) };
+  const noted = coachSession.noteAnalysis(judged, { transcript: heard || prompt, at });
+  if (noted.ignored) {
+    return {
+      type: 'ignored',
+      feedbackText: '',
+      extra: [],
+      follow: '',
+      say: '',
+      heardLine: 'Heard you.',
+      awaitingComfort: waitingForComfort,
+      statusHeld: noisyStatusHeld,
+      checkpoint: false,
+      showLine: '',
+      showSub: '',
+      noted
+    };
+  }
+  const statusRepeat = /\btoo noisy\b/i.test(localText) && noisyStatusHeld;
+  const feedbackText = localText && !statusRepeat ? localText : '';
+  let nextComfort = waitingForComfort;
+  const extra = [];
+  for (const event of noted.events) {
+    if (event.type === 'comfort-check') nextComfort = true;
+    if (event.text && event.text !== localText) extra.push(event.text);
+  }
+  const coached = Boolean(judged.feedback?.spoken);
+  const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
+  const asked = noted.events.some(event => event.type === 'comfort-check' || event.type === 'rest');
+  const next = !coached && !tooNoisy && !asked ? coachSession.advance() : '';
+  const follow = asked ? '' : followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next });
+  return {
+    type: 'practice',
+    feedbackText,
+    extra,
+    follow,
+    say: '',
+    heardLine: coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : 'Heard you. That was clear.',
+    awaitingComfort: nextComfort,
+    statusHeld: /\btoo noisy\b/i.test(judged.feedback?.text || ''),
+    checkpoint: noted.events.some(event => event.type === 'feedback'),
+    showLine: coachSession.prompt() || 'Free talk whenever you are ready.',
+    showSub: judged.feedback?.text || '',
+    noted
+  };
+}
+
 async function judgeTurn(turn) {
   const prompt = session.prompt();
   showHeard('Heard you.');
@@ -461,25 +579,23 @@ async function judgeTurn(turn) {
     goal: savedDeps.getGoal(),
     cursor: session.status().cursor
   });
-  const localText = spokenLine(turn, local);
-  const statusRepeat = /\btoo noisy\b/i.test(localText) && statusHeld;
-  if (localText && !statusRepeat) {
-    statusHeld = /\btoo noisy\b/i.test(localText);
-    lastFeedback = localText;
-    show(localText, prompt || '');
-  }
-  const voicePromise = localText && !statusRepeat ? speak(localText) : Promise.resolve();
+  // Wait for the transcript before any phrase line. Otherwise "next phrase" is
+  // coached out loud, and the command reply only starts after that finishes.
   const cloud = await cloudTurn(turn.samples, turn.sampleRate);
-  if (!session || hiddenByPage || session.status().stopped) {
-    await voicePromise;
-    return;
-  }
-  const ear = cloud?.ear ? parseEar(cloud.ear) : null;
-  const heard = cloud?.transcript || '';
-  const command = matchCommand(heard, { paused: session.status().paused });
-  if (command) {
-    await voicePromise;
-    const result = session.command(command);
+  if (!session || hiddenByPage || session.status().stopped) return;
+  const plan = planCoachTurn({
+    session,
+    turn,
+    heard: cloud?.transcript || '',
+    ear: cloud?.ear ? parseEar(cloud.ear) : null,
+    goal: savedDeps.getGoal(),
+    at: clock ? clock() : Date.now(),
+    awaitingComfort,
+    statusHeld,
+    local
+  });
+  if (plan.type === 'command') {
+    const result = plan.result;
     if (result.type === 'pause') userPaused = true;
     if (result.type === 'resume') {
       userPaused = false;
@@ -490,44 +606,29 @@ async function judgeTurn(turn) {
     else if (result.entry) savedDeps.save(result.entry);
     return;
   }
-  if (awaitingComfort) {
-    const comfort = session.comfortReply(heard || prompt);
-    if (comfort?.say) {
-      await voicePromise;
-      awaitingComfort = false;
-      await say(comfort.say);
-      if (comfort.type === 'comfort-pause') await finishSession(comfort.entry);
-      else if (comfort.entry) savedDeps.save(comfort.entry);
-      return;
-    }
+  if (plan.type === 'comfort') {
+    awaitingComfort = false;
+    await say(plan.say);
+    if (plan.result.type === 'comfort-pause') await finishSession(plan.result.entry);
+    else if (plan.result.entry) savedDeps.save(plan.result.entry);
+    return;
   }
-  const judged = ear ? classifyUtterance({
-    analysis: turn,
-    prompt: heard || prompt,
-    goal: savedDeps.getGoal(),
-    ear,
-    cursor: session.status().cursor
-  }) : local;
-  const heardText = spokenLine(turn, judged) || localText;
-  if (judged.feedback) judged.feedback = { ...judged.feedback, text: heardText, spoken: Boolean(heardText) };
-  const noted = session.noteAnalysis(judged, { transcript: heard || prompt, at: clock ? clock() : Date.now() });
-  await voicePromise;
-  if (noted.ignored) return;
-  lastFeedback = judged.feedback.text;
-  statusHeld = /\btoo noisy\b/i.test(lastFeedback || '');
-  for (const event of noted.events) {
-    if (event.type === 'comfort-check') awaitingComfort = true;
-    if (event.text && event.text !== localText) await say(event.text);
+  if (plan.type === 'ignored') return;
+  awaitingComfort = plan.awaitingComfort;
+  statusHeld = plan.statusHeld;
+  lastFeedback = plan.showSub || '';
+  if (plan.feedbackText) {
+    show(plan.feedbackText, prompt || '');
+    await speak(plan.feedbackText);
   }
-  if (noted.events.some(event => event.type === 'feedback')) checkpoint();
-  const coached = Boolean(judged.feedback?.spoken);
-  const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
-  const asked = noted.events.some(event => event.type === 'comfort-check' || event.type === 'rest');
-  const next = !coached && !tooNoisy && !asked ? session.advance() : '';
-  const follow = asked ? '' : followUpLine({ prompt: session.prompt(), coached, tooNoisy, next });
-  showHeard(coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : 'Heard you. That was clear.');
-  show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback);
-  if (follow && !session.status().stopped && !hiddenByPage) await say(follow);
+  for (const line of plan.extra) {
+    if (!session || session.status().stopped || hiddenByPage) return;
+    await say(line);
+  }
+  if (plan.checkpoint) checkpoint();
+  showHeard(plan.heardLine);
+  show(plan.showLine, lastFeedback);
+  if (plan.follow && session && !session.status().stopped && !hiddenByPage) await say(plan.follow);
 }
 
 function pushCaptured(input, ctx) {
