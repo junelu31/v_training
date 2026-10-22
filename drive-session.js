@@ -6,9 +6,9 @@
 import { analyzePcm, createTurnDetector } from './drive-dsp.js';
 
 const LINES = {
-  'pitch-low': 'Bring the pitch up a little.',
-  'pitch-drop-end': 'Lift the end of the word. You dropped into chest.',
-  'vocal-fry': 'Ease out of the fry and let the tone smooth out.',
+  'pitch-low': 'Hum, and bring the pitch up a little.',
+  'pitch-drop-end': 'Lift the end of the word with a small hum.',
+  'vocal-fry': 'Keep breath flowing through the last word, and lift the pitch a little so the end does not creak.',
   'resonance-dark': 'Move the tongue more forward, toward the front of the mouth.',
   breathiness: 'Use a little less air so the tone stays clear.',
   'too-noisy': 'This one is too noisy to coach.'
@@ -115,6 +115,12 @@ export function describeTake(samples, sampleRate = 16000) {
     && head.med - tail.med >= 50 && head.med >= 165 && tail.med <= 140 && tailConf >= 0.7;
   const steadyHigh = Number.isFinite(f0) && f0 >= 160 && f0 <= 260 && cv < 0.08
     && head.std < 18 && tail.std < 18 && Math.abs((head.med || 0) - (tail.med || 0)) < 25;
+  const body = voiced.filter(frame => frame.t <= (voiced[voiced.length - 1]?.t || 0) * 0.8);
+  const bodyH1 = median(body.map(frame => frame.h1h2));
+  const bodyConf = median(body.map(frame => frame.confidence));
+  const duration = samples.length / sampleRate;
+  const maskedTail = voiced.length > 0 && duration - voiced[voiced.length - 1].t > 0.34;
+  const breathThrough = steadyHigh && body.length >= 12 && bodyConf < 0.75 && bodyH1 > -16 && !maskedTail;
   if (voiced.length < 8) {
     if (rms >= 0.12) cueId = 'too-noisy';
   } else if (ending?.irregular) cueId = 'vocal-fry';
@@ -122,7 +128,7 @@ export function describeTake(samples, sampleRate = 16000) {
   else if (f0 < 112 && formant >= 1600 && cv >= 0.008 && cv < 0.08 && conf < 0.85 && voiced.length >= 12) cueId = 'vocal-fry';
   else if (f0 >= 100 && f0 < 145 && formant >= 1650 && cv < 0.008 && conf >= 0.9) cueId = 'pitch-low';
   else if (formant < 1400 && f0 >= 165 && cv < 0.02) cueId = 'resonance-dark';
-  else if (steadyHigh && analysis.voicedFraction >= 0.3 && analysis.voicedFraction < 0.75 && conf < 0.75 && formant >= 1650 && voiced.length >= 18 && crossings < 0.16) cueId = 'breathiness';
+  else if (breathThrough && analysis.voicedFraction >= 0.3 && analysis.voicedFraction < 0.75 && conf < 0.75 && formant >= 1650 && voiced.length >= 18 && crossings < 0.16 && analysis.snrDb >= 6) cueId = 'breathiness';
   return {
     profile: cueId === 'too-noisy' ? null : profile,
     cueId,

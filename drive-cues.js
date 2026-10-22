@@ -30,8 +30,8 @@ export const CUE_LIBRARY = {
   heavy: {
     name: 'Heavy buzzy weight',
     variants: [
-      'Use a lighter voice, with less buzz in your chest.',
-      'Use only enough voice for someone close by, and let the buzz get thinner.',
+      'Start from a light sigh, then say the word with less buzz in your chest.',
+      'Start from a gentle hm at the front of the face, only as loud as someone close by.',
       'Sigh the word out lightly, then say it again the same easy way.'
     ]
   },

@@ -17,7 +17,8 @@ test('cue library rotates physical lines and stays free of markup', () => {
   }
   assert.match(cueLine('chesty', 0), /tongue more forward/);
   assert.match(cueLine('dark', 0), /larynx/);
-  assert.match(cueLine('heavy', 0), /lighter voice/);
+  assert.match(cueLine('heavy', 0), /light sigh/);
+  assert.match(cueLine('heavy', 1), /gentle hm/);
   assert.match(cueLine('drop', 0), /end of the word/);
   assert.match(cueLine('fry', 0), /air flowing/);
   assert.match(cueLine('strain', 0), /light hum/);
