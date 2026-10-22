@@ -1,8 +1,9 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
 import { classifyUtterance, createCoachSession, matchCommand, parseEar } from './drive-coach.js';
+import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 
 let audioContext = null;
-let wakeLock = null;
+let silentGain = null;
 let detector = null;
 let session = null;
 let speaking = false;
@@ -15,6 +16,12 @@ let fileTest = false;
 let lastFeedback = '';
 let awaitingComfort = false;
 let clock = null;
+let userPaused = false;
+let hiddenByPage = false;
+let contextBound = false;
+let micGeneration = 0;
+let captureScratch = new Float32Array(0);
+let stayAwake = null;
 
 function el(id) {
   return document.getElementById(id);
@@ -28,28 +35,98 @@ function show(line, sub = '') {
   el('coachSub').textContent = sub;
 }
 
+function showAwake(mode) {
+  const node = el('coachAwake');
+  if (!node) return;
+  const label = awakeLabel(mode);
+  node.hidden = !label;
+  node.textContent = label;
+}
+
+function stayVideo() {
+  const video = el('coachStayAwake');
+  if (!video) return null;
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  video.loop = true;
+  return video;
+}
+
+function ensureStayAwake() {
+  if (stayAwake) return stayAwake;
+  stayAwake = createStayAwake({
+    requestWakeLock() {
+      if (!navigator.wakeLock?.request) return Promise.reject(new Error('Wake Lock is unavailable'));
+      return navigator.wakeLock.request('screen');
+    },
+    playVideo() {
+      const video = stayVideo();
+      if (!video) return Promise.reject(new Error('No stay-awake video'));
+      return video.play();
+    },
+    pauseVideo() {
+      stayVideo()?.pause();
+    },
+    isVideoPlaying() {
+      const video = stayVideo();
+      return !!video && !video.paused && !video.ended;
+    }
+  });
+  return stayAwake;
+}
+
 async function context() {
-  if (!audioContext) audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+  if (!audioContext) {
+    try {
+      audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+    } catch {
+      audioContext = new AudioContext();
+    }
+  }
+  if (!contextBound) {
+    contextBound = true;
+    audioContext.onstatechange = () => {
+      if (!session || session.status().stopped || hiddenByPage || userPaused) return;
+      if (document.visibilityState === 'hidden') return;
+      if (audioContext.state === 'suspended' || audioContext.state === 'interrupted') {
+        session.interrupt(audioContext.state);
+        show('The coach is paused.', 'Audio was interrupted. It resumes when the route is back.');
+      } else if (audioContext.state === 'running' && session.status().paused) {
+        session.resumeAfterInterrupt();
+        show(session.prompt() || 'The coach is listening.', lastFeedback);
+      }
+    };
+  }
   if (audioContext.state === 'suspended') await audioContext.resume();
   const sessionAudio = navigator.audioSession;
   if (sessionAudio && sessionAudio.type !== 'play-and-record') sessionAudio.type = 'play-and-record';
   return audioContext;
 }
 
-async function lockScreen() {
-  try {
-    wakeLock = await navigator.wakeLock?.request('screen');
-    wakeLock?.addEventListener?.('release', () => { wakeLock = null; });
-  } catch { wakeLock = null; }
+function outputGain(ctx) {
+  if (!silentGain || silentGain.context !== ctx) {
+    silentGain?.disconnect();
+    silentGain = ctx.createGain();
+    silentGain.gain.value = 0;
+    silentGain.connect(ctx.destination);
+  }
+  return silentGain;
 }
 
 function releaseGraph() {
+  micGeneration += 1;
   processor?.disconnect();
   sourceNode?.disconnect();
   processor = null;
   sourceNode = null;
   stream?.getTracks().forEach(track => track.stop());
   stream = null;
+}
+
+async function suspendAudio() {
+  if (audioContext && audioContext.state === 'running') await audioContext.suspend();
 }
 
 async function playSpeech(buffer, mime) {
@@ -67,7 +144,7 @@ async function playSpeech(buffer, mime) {
   player.removeAttribute('src');
   speaking = false;
   detector?.setSpeaking(false);
-  if (ctx.state === 'suspended') await ctx.resume();
+  if (ctx.state === 'suspended' && !hiddenByPage) await ctx.resume();
 }
 
 function speakLocal(text) {
@@ -160,8 +237,18 @@ function checkpoint() {
   } else session.queueSave(entry);
 }
 
+async function finishSession(entry) {
+  if (entry) savedDeps.save(entry);
+  await ensureStayAwake().stop();
+  showAwake('off');
+  releaseGraph();
+  await suspendAudio();
+  const overlay = el('coachOverlay');
+  if (overlay) overlay.hidden = true;
+}
+
 async function onTurn(turn) {
-  if (!session || speaking) return;
+  if (!session || speaking || hiddenByPage) return;
   const prompt = session.prompt();
   const local = classifyUtterance({
     analysis: turn,
@@ -170,13 +257,20 @@ async function onTurn(turn) {
     cursor: session.status().cursor
   });
   const cloud = await cloudTurn(turn.samples, turn.sampleRate, local.feedback.text);
+  if (!session || hiddenByPage || session.status().stopped) return;
   const ear = cloud?.ear ? parseEar(cloud.ear) : null;
   const heard = cloud?.transcript || '';
   const command = matchCommand(heard, { paused: session.status().paused });
   if (command) {
     const result = session.command(command);
+    if (result.type === 'pause') userPaused = true;
+    if (result.type === 'resume') {
+      userPaused = false;
+      try { await listen(); } catch { /* the resume button stays available */ }
+    }
     if (result.say) await say(result.say);
-    if (result.entry) savedDeps.save(result.entry);
+    if (result.type === 'stop') await finishSession(result.entry);
+    else if (result.entry) savedDeps.save(result.entry);
     return;
   }
   if (awaitingComfort) {
@@ -184,7 +278,8 @@ async function onTurn(turn) {
     if (comfort?.say) {
       awaitingComfort = false;
       await say(comfort.say);
-      if (comfort.entry) savedDeps.save(comfort.entry);
+      if (comfort.type === 'comfort-pause') await finishSession(comfort.entry);
+      else if (comfort.entry) savedDeps.save(comfort.entry);
       return;
     }
   }
@@ -203,52 +298,107 @@ async function onTurn(turn) {
     if (event.text) await say(event.text);
   }
   if (noted.events.some(event => event.type === 'feedback')) checkpoint();
-  show(session.prompt() || 'Free talk. I am listening.', lastFeedback);
+  show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback);
 }
 
 async function listen() {
   const ctx = await context();
   releaseGraph();
+  const generation = micGeneration;
   stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
   });
+  if (generation !== micGeneration || hiddenByPage) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+    return;
+  }
   sourceNode = ctx.createMediaStreamSource(stream);
   processor = ctx.createScriptProcessor(2048, 1, 1);
   processor.onaudioprocess = event => {
     const input = event.inputBuffer.getChannelData(0);
-    const copy = new Float32Array(input.length);
-    copy.set(input);
-    const samples = ctx.sampleRate === SAMPLE_RATE ? copy : resampleLinear(copy, ctx.sampleRate, SAMPLE_RATE);
+    if (captureScratch.length !== input.length) captureScratch = new Float32Array(input.length);
+    captureScratch.set(input);
+    const samples = ctx.sampleRate === SAMPLE_RATE ? captureScratch : resampleLinear(captureScratch, ctx.sampleRate, SAMPLE_RATE);
     detector?.push(samples);
   };
   sourceNode.connect(processor);
-  processor.connect(ctx.destination);
+  processor.connect(outputGain(ctx));
   stream.getAudioTracks()[0].addEventListener('ended', () => {
-    session?.interrupt('mic-ended');
+    if (generation !== micGeneration || hiddenByPage || !session || session.status().stopped) return;
+    session.interrupt('mic-ended');
     el('coachResume').hidden = false;
-    show('Tap to continue', 'iOS stopped the microphone because the screen locked or Lilt went to the background.');
+    show('The microphone stopped.', 'Tap to continue.');
   });
+}
+
+function presenceArgs() {
+  return {
+    stopped: !session || session.status().stopped,
+    userPaused,
+    interrupt: reason => session.interrupt(reason),
+    resume: () => session.resumeAfterInterrupt(),
+    stopMic: releaseGraph,
+    suspendAudio,
+    resumeAudio: async () => {
+      if (audioContext && audioContext.state !== 'running') await audioContext.resume();
+    },
+    openMic: async () => {
+      if (!fileTest) await listen();
+    },
+    stayAwake: ensureStayAwake()
+  };
+}
+
+async function onVisibility() {
+  if (!session || session.status().stopped) return;
+  const visible = document.visibilityState === 'visible';
+  hiddenByPage = !visible;
+  try {
+    const result = await applyVisibility({ visible, ...presenceArgs() });
+    showAwake(result.mode);
+    if (!visible) {
+      show('The coach is paused.', 'Open Lilt to continue.');
+      return;
+    }
+    if (result.heldPaused) {
+      show('The coach is paused.', 'Say resume when you want to continue.');
+      return;
+    }
+    el('coachResume').hidden = true;
+    show(session.prompt() || 'The coach is listening.', lastFeedback);
+  } catch {
+    el('coachResume').hidden = false;
+    show('The microphone stopped.', 'Tap to continue.');
+  }
 }
 
 export function mountDriveCoach(deps) {
   savedDeps = deps;
   fileTest = new URLSearchParams(location.search).has('coachTest');
   el('coachTestRow').hidden = !fileTest;
-  el('startCoach').onclick = () => start().catch(error => show('Microphone needed', error.message || 'Allow the microphone, then tap to continue.'));
-  el('coachResume').onclick = () => start().catch(() => show('Tap to continue', 'The microphone still needs a tap.'));
-  el('coachFile').onchange = () => consumeFile(el('coachFile').files?.[0]);
-  document.addEventListener('visibilitychange', () => {
-    if (!session || document.visibilityState !== 'visible') return;
+  const clicked = () => {
+    const ready = ensureStayAwake().arm();
+    el('coachOverlay').hidden = false;
+    begin(ready).catch(error => show('The microphone is needed.', error.message || 'Allow the microphone, then tap to continue.'));
+  };
+  el('startCoach').onclick = clicked;
+  el('coachResume').onclick = clicked;
+  el('coachFile').onchange = () => {
+    const ready = (!session || session.status().stopped) ? ensureStayAwake().arm() : null;
+    consumeFile(el('coachFile').files?.[0], ready);
+  };
+  document.addEventListener('visibilitychange', () => { onVisibility().catch(() => {}); });
+  navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+    if (!session || session.status().stopped || hiddenByPage) return;
     const track = stream?.getAudioTracks?.()[0];
     if (!track || track.readyState === 'ended') {
       el('coachResume').hidden = false;
-      show('Tap to continue', 'The iPhone stops the mic when Lilt is not on screen. One tap starts it again.');
-    } else lockScreen();
-  });
-  navigator.mediaDevices?.addEventListener?.('devicechange', () => {
-    if (!session) return;
+      show('The microphone stopped.', 'The audio route changed. Tap to continue.');
+      return;
+    }
     context().then(ctx => ctx.resume()).catch(() => {});
-    show(session.prompt() || 'Listening.', 'Audio route changed. Still with you.');
+    show(session.prompt() || 'The coach is listening.', 'The audio route changed.');
   });
   window.addEventListener('online', () => {
     const flushed = session?.flushSaves(true);
@@ -261,40 +411,39 @@ export function mountDriveCoach(deps) {
     },
     status: () => session?.status() || null,
     lastFeedback: () => lastFeedback,
-    audioContext: () => audioContext
+    audioContext: () => audioContext,
+    awake: () => ensureStayAwake().status()
   };
 }
 
-async function start() {
-  const lines = savedDeps.getLines();
-  session = createCoachSession({
-    plannedMinutes: savedDeps.getPlanned(),
-    routineId: savedDeps.getRoutine(),
-    lines,
-    now: Date.now()
-  });
-  detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
-  awaitingComfort = false;
+async function begin(ready) {
+  const mode = await ready;
+  showAwake(mode);
+  userPaused = false;
+  if (!session || session.status().stopped) {
+    const lines = savedDeps.getLines();
+    session = createCoachSession({
+      plannedMinutes: savedDeps.getPlanned(),
+      routineId: savedDeps.getRoutine(),
+      lines,
+      now: Date.now()
+    });
+    detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
+    awaitingComfort = false;
+    lastFeedback = '';
+  } else if (session.status().paused) {
+    session.resumeAfterInterrupt();
+  }
+  hiddenByPage = false;
   el('coachResume').hidden = true;
-  await lockScreen();
-  show(lines[0] || 'Free talk whenever you are ready.', 'I am listening.');
+  show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback || 'I am listening.');
   if (!fileTest) await listen();
-  const ctx = await context();
-  ctx.onstatechange = () => {
-    if (!session) return;
-    if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
-      session.interrupt(ctx.state);
-      show('Paused', 'Audio was interrupted. It resumes when the route is back.');
-    } else if (ctx.state === 'running' && session.status().paused && !session.status().stopped) {
-      session.resumeAfterInterrupt();
-      show(session.prompt() || 'Listening.', 'Back with you.');
-    }
-  };
+  else await context();
 }
 
-async function consumeFile(file) {
+async function consumeFile(file, ready) {
   if (!file) return;
-  if (!session) await start();
+  if (!session || session.status().stopped) await begin(ready || ensureStayAwake().arm());
   const ctx = await context();
   const decoded = await ctx.decodeAudioData(await file.arrayBuffer());
   const mixed = decoded.getChannelData(0);

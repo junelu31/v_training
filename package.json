@@ -8,7 +8,7 @@
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "deploy": "npm run build && wrangler deploy",
-    "check": "node --check app.js && node --check client-logic.js && node --check worker/index.js && node --check drive-coach.js && node --check drive-dsp.js && node --check drive-ui.js && node --check drive-cues.js",
+    "check": "node --check app.js && node --check client-logic.js && node --check worker/index.js && node --check drive-coach.js && node --check drive-dsp.js && node --check drive-ui.js && node --check drive-cues.js && node --check drive-wake.js",
     "test": "node --expose-gc --test tests/*.test.mjs"
   },
   "dependencies": {

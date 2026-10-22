@@ -75,7 +75,7 @@ Drive coach is the hands-free practice loop. One **Start Drive coach** button op
 
 This does not use `@cloudflare/voice` `withVoice`. That loop only hands the page a transcript, so it cannot score her audio or keep the coach's own voice out of the take. There is no Durable Object. A coach check-in is a drive-log row with `kind: "coach"`, so older drive logs stay valid. Sessions under about 20 seconds are not written. The in-memory phrase list is capped, and a checkpoint is persisted every few phrases.
 
-On an iPhone, add Lilt to the Home Screen and leave the Drive coach screen up. A screen Wake Lock is requested, and the audio context resumes after a call, Siri, CarPlay, or a Bluetooth route change when the browser allows it. If the screen locks or the app is backgrounded, iOS stops the microphone. The page then shows **Tap to continue** instead of coaching silence. Saves that fail offline stay queued and flush when the network returns.
+On an iPhone, add Lilt to the Home Screen. Starting Drive coach requests a screen Wake Lock from that tap, asks again when the page becomes visible, and releases the lock when the session stops. If the browser has no Wake Lock API, or the request fails, the same tap plays `stay-awake.mp4`: one muted, inline, looping video, two pixels on screen. The page says “Screen stays on.” If neither method works, it says “Set Auto-Lock to Never during drives.” There is no timer and no canvas redraw. Switching apps pauses the coach, stops the microphone, and suspends the one audio context. Coming back re-acquires the lock and resumes the same session. A call, Siri, CarPlay, or a Bluetooth route change pauses and resumes when audio returns. Saves that fail offline stay queued and flush when the network returns.
 
 Do not deploy from this branch unless June asks. `npm run deploy` publishes the Worker.
 
@@ -87,7 +87,7 @@ Do not deploy from this branch unless June asks. `npm run deploy` publishes the 
 | --- | --- | --- |
 | Cue library, confidence gate, synthetic issue precision/recall, commands, praise | `node --test tests/drive-coach.test.mjs` | Physical cues stay one sentence, rotate, and contain no HTML. Clean words are not flagged. A labeled phrase must catch strain, a pitch drop, chest or weight, and fry. |
 | Generated road noise | same file | Twelve seconds of synthetic road noise opens no turn. A phrase mixed at 5 dB does not invent a spoken issue when the take is too noisy. |
-| 40-minute memory soak | `node --expose-gc --test tests/coach-soak.test.mjs` | Loops speech plus noise for 40 simulated minutes. Logs heap at the start, 20 minutes, and 40 minutes. The second 20 minutes must grow by less than 8 MB, and the phrase log stays capped. |
+| 40-minute memory soak | `node --expose-gc --test tests/coach-soak.test.mjs` | Loops speech plus noise for 40 simulated minutes and hides the page once a minute. Logs heap at the start, 20 minutes, and 40 minutes. The second 20 minutes must grow by less than 8 MB. The phrase log stays capped. The wake lock and the fallback video stay at one instance each, and the module does not start a timer or a canvas loop. |
 | Coach progress shape | `node --test tests/worker.test.mjs` | A `kind: "coach"` row round-trips. Markup inside feedback is rejected. |
 
 Masculine/feminine profiling uses OpenSLR LibriSpeech train-clean-100 (CC BY 4.0), streamed from the Hugging Face mirror `openslr/librispeech_asr`. Audio is written under `/tmp/lilt-profile` and must not be committed.

@@ -529,12 +529,12 @@ export function createCoachSession({
       clock = at;
       if (name === 'pause') {
         paused = true;
-        return { type: 'pause', say: 'Paused. Say resume when you want to continue.' };
+        return { type: 'pause', say: 'The coach is paused. Say resume when you want to continue.' };
       }
       if (name === 'resume') {
         if (!paused || stopped) return { type: 'speech' };
         paused = false;
-        return { type: 'resume', say: 'Back with you.' };
+        return { type: 'resume', say: 'The coach is listening again.' };
       }
       if (name === 'stop') {
         stopped = true;
