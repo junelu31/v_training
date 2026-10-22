@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createTurnDetector, makeRoadNoise, synthesizeWords } from '../drive-dsp.js';
-import { classifyUtterance, createCoachSession } from '../drive-coach.js';
+import { createCoachSession } from '../drive-coach.js';
+import { reviewLiveTurn } from '../drive-ui.js';
 import { applyVisibility, awakeLabel, createStayAwake } from '../drive-wake.js';
 
 function fakeStay({ lock = true, videoOk = true } = {}) {
@@ -71,9 +72,8 @@ test('a 40 minute coach loop keeps a fixed buffer and a capped log', async () =>
   const detector = createTurnDetector({
     onTurn(turn) {
       turns += 1;
-      const judged = classifyUtterance({ analysis: turn, prompt: 'Hi there', goal, cursor: turns });
       now += 30_000;
-      session.noteAnalysis(judged, { transcript: 'Hi there', at: now });
+      reviewLiveTurn(turn, session, { goal, at: now, prompt: 'Hi there' });
       if (turns % 4 === 0) session.checkpoint(now);
     }
   });
@@ -205,6 +205,21 @@ test('a 40 minute coach loop keeps a fixed buffer and a capped log', async () =>
   assert.equal(manualRig.live.size, 0);
   await manualStay.stop();
   console.log(JSON.stringify({ turns, heapStart: mark[0], heap20: mark[20], heap40: mark[40], growth20, growth40, wakeLocksIssued: rig.issued, videoPlays: rig.video.plays }));
-  assert.ok(growth40 < 8 * 1024 * 1024, `heap grew ${growth40} bytes in the second 20 minutes`);
+  assert.ok(growth40 < 1.5 * 1024 * 1024, `heap grew ${growth40} bytes in the second 20 minutes`);
   assert.ok(turns > 10);
+});
+
+test('a visible wake-lock re-request falls back to the video', async () => {
+  const rig = fakeStay();
+  rig.hooks.isVisible = () => true;
+  const stay = createStayAwake(rig.hooks);
+  assert.equal(await stay.arm(), 'lock');
+  rig.hooks.requestWakeLock = () => Promise.reject(new Error('Wake Lock rejected'));
+  await rig.releaseBrowser();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(stay.status().mode, 'video');
+  assert.equal(rig.video.playing, true);
+  assert.equal(rig.live.size, 0);
+  await stay.stop();
+  assert.equal(stay.status().mode, 'off');
 });

@@ -43,8 +43,15 @@ export function createStayAwake(hooks) {
         hooks.onMode?.('lock');
       }).catch(() => {
         if (!active) return;
-        mode = 'off';
-        hooks.onMode?.('off');
+        Promise.resolve().then(() => hooks.playVideo()).then(() => {
+          if (!active) return;
+          mode = 'video';
+          hooks.onMode?.('video');
+        }).catch(() => {
+          if (!active) return;
+          mode = 'manual';
+          hooks.onMode?.('manual');
+        });
       });
     };
     lock.addEventListener?.('release', onRelease);

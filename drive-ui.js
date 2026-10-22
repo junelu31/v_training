@@ -1,7 +1,9 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
 import { classifyUtterance, createCoachSession, matchCommand, parseEar } from './drive-coach.js';
-import { describeTake } from './drive-session.js';
+import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
+
+export { createDriveSession };
 
 let audioContext = null;
 let silentGain = null;
@@ -15,6 +17,7 @@ let stream = null;
 let savedDeps = null;
 let fileTest = false;
 let lastFeedback = '';
+let guideRetired = false;
 let awaitingComfort = false;
 let clock = null;
 let userPaused = false;
@@ -38,6 +41,9 @@ function show(line, sub = '') {
   overlay.hidden = false;
   el('coachLine').textContent = line;
   el('coachSub').textContent = sub;
+  const guide = el('coachGuide');
+  if (lastFeedback) guideRetired = true;
+  if (guide) guide.hidden = guideRetired;
   if (wasHidden) overlay.focus();
 }
 
@@ -284,13 +290,21 @@ async function finishSession(entry) {
   if (overlay) overlay.hidden = true;
 }
 
-function spokenLine(turn, local) {
-  const take = turn?.samples?.length ? describeTake(turn.samples, turn.sampleRate || SAMPLE_RATE) : null;
-  const localText = local.feedback?.text || '';
-  if (take?.tooNoisy) return take.text;
-  if (take?.cueId === 'pitch-drop-end' && local.feedback?.issue === 'fry') return take.text;
-  if (!localText && take?.text) return take.text;
-  return localText;
+function spokenLine(turn) {
+  return readTurn(turn).text || '';
+}
+
+export function reviewLiveTurn(turn, coachSession, { goal, at = Date.now(), prompt } = {}) {
+  const linePrompt = prompt || coachSession.prompt();
+  const local = classifyUtterance({
+    analysis: turn,
+    prompt: linePrompt,
+    goal,
+    cursor: coachSession.status().cursor
+  });
+  const text = spokenLine(turn);
+  if (local.feedback) local.feedback = { ...local.feedback, text, spoken: Boolean(text) };
+  return coachSession.noteAnalysis(local, { transcript: linePrompt, at });
 }
 
 async function onTurn(turn) {
@@ -302,7 +316,7 @@ async function onTurn(turn) {
     goal: savedDeps.getGoal(),
     cursor: session.status().cursor
   });
-  const localText = spokenLine(turn, local);
+  const localText = spokenLine(turn);
   if (localText) {
     lastFeedback = localText;
     show(localText, prompt || '');
@@ -347,7 +361,7 @@ async function onTurn(turn) {
     ear,
     cursor: session.status().cursor
   }) : local;
-  if (localText && judged.feedback) judged.feedback = { ...judged.feedback, text: localText };
+  if (judged.feedback) judged.feedback = { ...judged.feedback, text: localText, spoken: Boolean(localText) };
   const noted = session.noteAnalysis(judged, { transcript: heard || prompt, at: clock ? clock() : Date.now() });
   await voicePromise;
   if (noted.ignored) return;
@@ -528,6 +542,9 @@ async function begin(ready, micPromise = null) {
     detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
     awaitingComfort = false;
     lastFeedback = '';
+    guideRetired = false;
+    const guide = el('coachGuide');
+    if (guide) guide.hidden = false;
   } else if (session.status().paused) {
     session.resumeAfterInterrupt();
   }

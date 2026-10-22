@@ -394,7 +394,7 @@ export function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
+export function analyzePcm(samples, sampleRate = SAMPLE_RATE, { octave = false } = {}) {
   const filtered = precondition(samples, sampleRate);
   const rough = [];
   for (let start = 0; start + FRAME <= filtered.length; start += HOP) {
@@ -415,17 +415,22 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
   for (let start = 0; start + FRAME <= filtered.length; start += HOP, index++) {
     const buf = filtered.subarray(start, start + FRAME);
     const pitch = estimatePitch(buf, sampleRate);
+    // A half-pitch lock still correlates at the true period (half the chosen lag).
+    // Doubling those frames keeps a 96 Hz tail that is really 192 Hz from looking
+    // like fry or a drop. A true low vowel has a weak half-lag correlation and stays.
+    const hz = pitch.hz;
+    const subharm = pitch.subharm;
     const db = magnitudeDb(buf);
     const flatness = spectralFlatness(db);
     const tilt = spectralTilt(db, sampleRate);
-    const bright = spectralBalance(db, sampleRate, Number.isFinite(pitch.hz) ? pitch.hz : 180);
-    const h1 = interpDb(db, sampleRate, pitch.hz);
-    const h2 = interpDb(db, sampleRate, pitch.hz * 2);
+    const bright = spectralBalance(db, sampleRate, Number.isFinite(hz) ? hz : 180);
+    const h1 = interpDb(db, sampleRate, hz);
+    const h2 = interpDb(db, sampleRate, hz * 2);
     const h1h2 = Number.isFinite(h1) && Number.isFinite(h2) ? h1 - h2 : NaN;
-    const support = harmonicScore(db, sampleRate, pitch.hz);
+    const support = harmonicScore(db, sampleRate, hz);
     const snr = 20 * Math.log10(Math.max(pitch.rms, 1e-5) / noiseFloor);
-    const jitter = Number.isFinite(previousHz) && Number.isFinite(pitch.hz) && previousHz > 0
-      ? Math.abs(pitch.hz - previousHz) / previousHz
+    const jitter = Number.isFinite(previousHz) && Number.isFinite(hz) && previousHz > 0
+      ? Math.abs(hz - previousHz) / previousHz
       : 0;
     const low = bandMeanDb(db, sampleRate, 250, 900);
     const high = bandMeanDb(db, sampleRate, 1300, 3400);
@@ -433,23 +438,23 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
     const centroid = spectralCentroid(db, sampleRate);
     const harmonicOk = pitch.confidence >= 0.36 && flatness < 0.72 && support > 1.5 && snr > 2.5;
     // Below 95 Hz, a road-rumble sine can lock. A vowel still has energy above it.
-    const lowTone = Number.isFinite(pitch.hz) && pitch.hz < 95;
+    const lowTone = Number.isFinite(hz) && hz < 95;
     const lowToneOk = !lowTone || (flatness < 0.28 && support > 4 && centroid > 350);
-    const voiced = harmonicOk && lowToneOk && Number.isFinite(pitch.hz) && pitch.hz >= MIN_HZ && pitch.hz <= MAX_HZ;
+    const voiced = harmonicOk && lowToneOk && Number.isFinite(hz) && hz >= MIN_HZ && hz <= MAX_HZ;
     let fry = 0;
-    if (voiced && pitch.hz < 155) {
+    if (voiced && hz < 155) {
       if (jitter > 0.04) fry += 0.45;
-      if (pitch.subharm > 0.7) fry += 0.35;
+      if (subharm > 0.7) fry += 0.35;
       if (pitch.confidence < 0.7) fry += 0.3;
     }
     fry = Math.min(1, fry);
     const vowel = voiced && flatness < 0.4 && support > 2.4 && snr > 6;
     const formants = vowel ? formantPeaks(buf, sampleRate) : { f1: NaN, f2: NaN, f3: NaN, vtl: NaN };
-    if (voiced) previousHz = pitch.hz;
+    if (voiced) previousHz = hz;
     frames.push({
       t: (start + FRAME / 2) / sampleRate,
       rms: pitch.rms,
-      hz: voiced ? pitch.hz : NaN,
+      hz: voiced ? hz : NaN,
       confidence: pitch.confidence,
       flatness,
       brightness: Number.isFinite(bright) ? bright : NaN,
@@ -464,7 +469,8 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
       resonance: Number.isFinite(resonance) ? resonance : NaN,
       centroid: Number.isFinite(centroid) ? centroid : NaN,
       fry,
-      subharm: pitch.subharm,
+      subharm,
+      ...(octave ? { rawHz: hz, rawSubharm: subharm } : {}),
       snr,
       voiced,
       support,
@@ -475,7 +481,84 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
   const speechLevel = median(speechRms);
   const snrDb = Number.isFinite(speechLevel) ? 20 * Math.log10(Math.max(speechLevel, 1e-5) / noiseFloor) : -20;
   const voicedFraction = frames.length ? frames.filter(frame => frame.voiced).length / frames.length : 0;
-  return { frames, noiseFloor, snrDb, voicedFraction, filtered };
+  if (octave) correctOctaveJumps(frames);
+  return { frames, noiseFloor, snrDb, voicedFraction };
+}
+
+// A half-pitch lock correlates again at the true period. A real octave fall
+// does not: the low tail holds for many frames with high confidence and a weak
+// half-lag score. Move a frame only when the other octave sits on the trusted
+// median, and never lift that sustained confident tail.
+function correctOctaveJumps(frames) {
+  const voiced = frames.filter(frame => frame.voiced && Number.isFinite(frame.rawHz));
+  if (voiced.length < 6) {
+    for (const frame of frames) {
+      delete frame.rawHz;
+      delete frame.rawSubharm;
+    }
+    return;
+  }
+  const trusted = voiced.filter(frame => frame.rawSubharm <= 0.45 && frame.confidence >= 0.45);
+  const pool = trusted.length >= 4
+    ? trusted
+    : voiced.map(frame => ({
+      rawHz: frame.rawSubharm > 0.7 && frame.rawHz * 2 <= MAX_HZ ? frame.rawHz * 2 : frame.rawHz
+    }));
+  const reference = median(pool.map(frame => frame.rawHz));
+  if (!Number.isFinite(reference)) {
+    for (const frame of frames) {
+      delete frame.rawHz;
+      delete frame.rawSubharm;
+    }
+    return;
+  }
+  const lowRun = sustainedLowRun(voiced, reference);
+  for (const frame of frames) {
+    const raw = frame.rawHz;
+    const sub = frame.rawSubharm || 0;
+    delete frame.rawHz;
+    delete frame.rawSubharm;
+    if (!frame.voiced || !Number.isFinite(raw) || !Number.isFinite(reference)) continue;
+    if (lowRun.has(frame)) continue;
+    const doubled = raw * 2;
+    const halved = raw / 2;
+    const closerUp = doubled <= MAX_HZ && Math.abs(doubled - reference) + 12 < Math.abs(raw - reference);
+    const halfLock = sub > 0.5 || (frame.confidence < 0.65 && sub > 0.3);
+    if (closerUp && halfLock) {
+      frame.hz = doubled;
+      frame.subharm = 0;
+      if (doubled >= 155) frame.fry = 0;
+      continue;
+    }
+    const closerDown = halved >= MIN_HZ && Math.abs(halved - reference) + 12 < Math.abs(raw - reference);
+    if (closerDown && frame.confidence < 0.7 && sub <= 0.45) {
+      frame.hz = halved;
+      frame.subharm = 0;
+    }
+  }
+}
+
+function sustainedLowRun(voiced, reference) {
+  const held = new Set();
+  let run = [];
+  function close() {
+    if (run.length < 8) {
+      run = [];
+      return;
+    }
+    const conf = median(run.map(frame => frame.confidence));
+    const sub = median(run.map(frame => frame.rawSubharm));
+    if (conf >= 0.75 && sub < 0.35) for (const frame of run) held.add(frame);
+    run = [];
+  }
+  for (const frame of voiced) {
+    const half = frame.rawHz * 2;
+    const nearHalf = half <= MAX_HZ && Math.abs(half - reference) + 12 < Math.abs(frame.rawHz - reference);
+    if (nearHalf) run.push(frame);
+    else close();
+  }
+  close();
+  return held;
 }
 
 export const TURN = {
@@ -563,7 +646,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     voicedMs = 0;
     quietMs = 0;
     if (duration < TURN.minTurnMs / 1000) return;
-    const analysis = analyzePcm(samples, sampleRate);
+    const analysis = analyzePcm(samples, sampleRate, { octave: true });
     const speechLevel = percentile(Array.from(levels), 0.62);
     const trackerSnr = speechLevel > 0 ? 20 * Math.log10(Math.max(speechLevel, 1e-5) / Math.max(rawAmbient, 1e-5)) : -20;
     const snrDb = trackerSnr;

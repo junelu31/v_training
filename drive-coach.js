@@ -565,7 +565,10 @@ export function createCoachSession({
         restSuggested = true;
         events.push({ type: 'rest', text: 'You have been at this a while. A short rest would be kind. Say stop if you want to save and pause.' });
       }
-      if (phraseCount % 4 === 0) pendingSaves.push(logEntry(at));
+      if (phraseCount % 4 === 0) {
+        pendingSaves.push(logEntry(at));
+        if (pendingSaves.length > 4) pendingSaves.splice(0, pendingSaves.length - 4);
+      }
       return { events, entry };
     },
     hear(text, at = Date.now()) {

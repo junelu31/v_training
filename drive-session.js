@@ -3,7 +3,7 @@
 // The LibriSpeech profile in drive-coach.js is a separate fit. This reader
 // uses the practice boxes (pitch and a second formant) on the audio it is fed.
 
-import { analyzePcm } from './drive-dsp.js';
+import { analyzePcm, createTurnDetector } from './drive-dsp.js';
 
 const LINES = {
   'pitch-low': 'Bring the pitch up a little.',
@@ -67,11 +67,13 @@ function pitchOf(hzs) {
 }
 
 export function describeTake(samples, sampleRate = 16000) {
-  const analysis = analyzePcm(samples, sampleRate);
+  const analysis = analyzePcm(samples, sampleRate, { octave: true });
   const voiced = analysis.frames.filter(frame => frame.voiced && Number.isFinite(frame.hz));
   const hzs = voiced.map(frame => frame.hz);
   const head = stats(hzs.slice(0, Math.floor(hzs.length * 0.4)));
-  const tail = stats(hzs.slice(Math.floor(hzs.length * 0.6)));
+  const tailStart = Math.floor(hzs.length * 0.6);
+  const tail = stats(hzs.slice(tailStart));
+  const tailConf = median(voiced.slice(tailStart).map(frame => frame.confidence));
   const vowels = analysis.frames.filter(frame => frame.vowel);
   const f2 = median(vowels.map(frame => frame.f2Local).filter(Number.isFinite));
   const f2Wide = median(vowels.map(frame => frame.f2).filter(Number.isFinite));
@@ -88,15 +90,19 @@ export function describeTake(samples, sampleRate = 16000) {
     else profile = 'androgynous';
   }
   let cueId = null;
-  const smoothFall = head.n >= 6 && tail.n >= 6 && head.std < 8 && tail.std < 28
-    && head.med - tail.med >= 50 && head.med >= 165 && tail.med <= 140;
+  // A real fall stays low for the whole tail. An octave flicker was already
+  // folded back to the higher pitch, so the tail median matches the head.
+  const smoothFall = head.n >= 8 && tail.n >= 8 && head.std < 8 && tail.std < 22
+    && head.med - tail.med >= 50 && head.med >= 165 && tail.med <= 140 && tailConf >= 0.7;
+  const steadyHigh = Number.isFinite(f0) && f0 >= 160 && f0 <= 260 && cv < 0.08
+    && head.std < 18 && tail.std < 18 && Math.abs((head.med || 0) - (tail.med || 0)) < 25;
   if (voiced.length < 8) {
     if (rms >= 0.12) cueId = 'too-noisy';
   } else if (smoothFall) cueId = 'pitch-drop-end';
   else if (f0 < 112 && formant >= 1600 && cv >= 0.008 && cv < 0.08 && conf < 0.85 && voiced.length >= 12) cueId = 'vocal-fry';
   else if (f0 >= 100 && f0 < 145 && formant >= 1650 && cv < 0.008 && conf >= 0.9) cueId = 'pitch-low';
   else if (formant < 1400 && f0 >= 165 && cv < 0.02) cueId = 'resonance-dark';
-  else if (analysis.voicedFraction >= 0.4 && analysis.voicedFraction < 0.75 && crossings >= 0.075 && crossings < 0.12 && formant >= 1650 && voiced.length >= 12) cueId = 'breathiness';
+  else if (steadyHigh && analysis.voicedFraction >= 0.3 && analysis.voicedFraction < 0.75 && conf < 0.75 && formant >= 1650 && voiced.length >= 18 && crossings < 0.16) cueId = 'breathiness';
   return {
     profile: cueId === 'too-noisy' ? null : profile,
     cueId,
@@ -107,6 +113,16 @@ export function describeTake(samples, sampleRate = 16000) {
   };
 }
 
+/** The line the driver hears. The suite and the live turn both call this on the trimmed turn. */
+export function readTurn(turn) {
+  if (!turn) return { text: '', cueId: null, profile: null, tooNoisy: false };
+  if (turn.tooNoisy || turn.reason === 'noise') {
+    return { text: LINES['too-noisy'], cueId: 'too-noisy', profile: null, tooNoisy: true };
+  }
+  if (!turn.samples?.length) return { text: '', cueId: null, profile: null, tooNoisy: false };
+  return describeTake(turn.samples, turn.sampleRate || 16000);
+}
+
 export async function createDriveSession(options = {}) {
   const sampleRate = options.sampleRate || 16000;
   const doc = options.document;
@@ -114,9 +130,6 @@ export async function createDriveSession(options = {}) {
   const audioContext = options.audioContext || null;
   const mediaStream = options.mediaStream || null;
   const speak = typeof options.speak === 'function' ? options.speak : () => {};
-  const ring = new Float32Array(sampleRate * 8);
-  let write = 0;
-  let filled = 0;
   let stopped = false;
   let state = 'listening';
   let profile = null;
@@ -125,12 +138,17 @@ export async function createDriveSession(options = {}) {
   let video = null;
   const spokenOnce = new Set();
 
-  function ordered() {
-    const out = new Float32Array(filled);
-    const start = filled < ring.length ? 0 : write;
-    for (let i = 0; i < filled; i++) out[i] = ring[(start + i) % ring.length];
-    return out;
+  function accept(turn) {
+    const take = readTurn(turn);
+    if (take.profile) profile = take.profile;
+    if (!take.text || spokenOnce.has(take.text)) return;
+    spokenOnce.add(take.text);
+    cues = [{ id: take.cueId, text: take.text }];
+    speak(take.text);
+    if (state !== 'paused' && state !== 'needs-gesture') state = take.tooNoisy ? 'too-noisy' : 'coaching';
   }
+
+  const detector = createTurnDetector({ sampleRate, onTurn: accept });
 
   function fallbackVideo() {
     if (video || stopped || !doc?.createElement) return;
@@ -197,17 +215,6 @@ export async function createDriveSession(options = {}) {
     }
   }
 
-  function decide() {
-    if (filled < sampleRate * 0.4) return;
-    const take = describeTake(ordered(), sampleRate);
-    if (take.profile) profile = take.profile;
-    if (!take.cueId || spokenOnce.has(take.text)) return;
-    spokenOnce.add(take.text);
-    cues = [{ id: take.cueId, text: take.text }];
-    speak(take.text);
-    state = take.tooNoisy ? 'too-noisy' : 'coaching';
-  }
-
   if (doc?.addEventListener) {
     doc.addEventListener('visibilitychange', onVisibility);
     doc.addEventListener('pointerdown', onGesture);
@@ -218,21 +225,19 @@ export async function createDriveSession(options = {}) {
   return {
     async start() {},
     push(frame) {
-      if (!frame?.length || stopped) return;
-      for (let i = 0; i < frame.length; i++) {
-        ring[write] = frame[i];
-        write = (write + 1) % ring.length;
-      }
-      filled = Math.min(ring.length, filled + frame.length);
+      if (!frame?.length || stopped || state === 'paused' || state === 'needs-gesture') return;
+      detector.push(frame);
     },
     snapshot() {
-      if (state !== 'paused' && state !== 'needs-gesture') decide();
+      // The vowel clips have no trailing silence, so close the open turn the way a pause would.
+      if (state !== 'paused' && state !== 'needs-gesture') detector.flush();
       return { state, profile, cues };
     },
     resources() {
+      const stats = detector.stats();
       return {
-        retainedSamples: filled,
-        bufferBytes: ring.byteLength,
+        retainedSamples: stats.utteranceSamples,
+        bufferBytes: stats.bufferCap * 4,
         audioContexts: audioContext && audioContext.state !== 'closed' ? 1 : 0,
         mediaStreams: mediaStream ? 1 : 0
       };
