@@ -75,6 +75,17 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, pausedSession: { ...pause, comfort: 0 } }, version: 5 }, signedIn)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, baselineAttemptId: 'x'.repeat(81) }, version: 5 }, signedIn)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, pausedSession: { ...pause, lesson: '<bad>' } }, version: 5 }, signedIn)).status, 400);
+    const coachEntry = {
+      id: 'coach-1', date: '2026-10-06T12:00:00Z', routineId: 'week-2', plannedMinutes: 30, actualMinutes: 15,
+      comfort: 3, cueHeld: 'partly', kind: 'coach',
+      coach: { minutes: 15, mode: 'lines', comfortKnown: false, comfortPaused: false, restSuggested: false, summary: 'Two phrases held.', phrases: [{ prompt: 'Hi there', transcript: 'Hi there', feedback: 'That one held.', profile: 'androgynous', tooNoisy: false, words: [{ text: 'Hi', flags: ['strain'] }] }] }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, coachEntry] }, version: 5 }, signedIn)).status, 200);
+    const coachRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
+    assert.equal(coachRound.actualMinutes, 15);
+    assert.equal(coachRound.coach.comfortKnown, false);
+    assert.deepEqual(coachRound.coach.phrases[0].words[0].flags, ['strain']);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [{ ...coachEntry, coach: { ...coachEntry.coach, phrases: [{ ...coachEntry.coach.phrases[0], feedback: 'bad <b>' }] } }] }, version: 6 }, signedIn)).status, 400);
     const analyze = (headers, body) => mf.dispatchFetch('https://lilt.test/api/analyze', {
       method: 'POST', headers: { Origin: 'https://lilt.test', Cookie: signedIn, 'CF-Connecting-IP': '203.0.113.10', ...headers }, body
     });

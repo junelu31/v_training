@@ -86,7 +86,10 @@ export function trimHistory(value) {
       })
     };
   });
-  const driveLog = (Array.isArray(source.driveLog) ? source.driveLog : []).slice(-MAX_DRIVE_LOG);
+  const driveLog = (Array.isArray(source.driveLog) ? source.driveLog : []).slice(-MAX_DRIVE_LOG).map(entry => {
+    if (!entry || entry.kind !== 'coach' || !entry.coach || !Array.isArray(entry.coach.phrases)) return entry;
+    return { ...entry, coach: { ...entry.coach, phrases: entry.coach.phrases.slice(-30).map(phrase => ({ ...phrase, words: Array.isArray(phrase.words) ? phrase.words.slice(0, 16) : [] })) } };
+  });
   const seen = new Set();
   const course = [];
   const open = [];
