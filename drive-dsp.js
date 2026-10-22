@@ -597,8 +597,6 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
   let noise = 0.004;
   let rawNoise = 0.004;
   let rawAmbient = 0.004;
-  const hopRms = new Float32Array(Math.ceil(sampleRate * TURN.maxTurnSec / HOP));
-  let hopCount = 0;
   let turns = 0;
   const hopMs = (HOP / sampleRate) * 1000;
 
@@ -644,8 +642,6 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     inSpeech = false;
     const samples = utterance.slice(0, uttLen);
     const duration = uttLen / sampleRate;
-    const levels = hopRms.slice(0, hopCount);
-    hopCount = 0;
     uttLen = 0;
     voicedMs = 0;
     quietMs = 0;
@@ -656,10 +652,16 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     runMs = 0;
     if (duration < TURN.minTurnMs / 1000) return;
     const analysis = analyzePcm(samples, sampleRate, { octave: true });
-    const speechLevel = percentile(Array.from(levels), 0.62);
-    const trackerSnr = speechLevel > 0 ? 20 * Math.log10(Math.max(speechLevel, 1e-5) / Math.max(rawAmbient, 1e-5)) : -20;
+    // The closing quiet is most of a short turn. A percentile over the whole
+    // buffer sits on that floor and reads as -20 dB even when the word was clean.
+    // Compare the speech span with the floor measured before the turn opened.
+    const spanRms = speechSpanRms(samples, analysis.frames, sampleRate);
+    const floor = Math.max(rawAmbient, 1e-5);
+    const trackerSnr = spanRms > 0 ? 20 * Math.log10(Math.max(spanRms, 1e-5) / floor) : 0;
     const snrDb = trackerSnr;
-    const tooNoisy = !(snrDb >= TURN.snrCoachMin) || analysis.voicedFraction < 0.12;
+    // Silence is not noise. The status line is for a loud floor that was already
+    // there, and only when the turn is long enough to judge.
+    const tooNoisy = rawAmbient >= 0.12 && hopVoicedMs >= 200;
     const speechLike = analysis.frames.some(frame => frame.voiced) && analysis.voicedFraction >= 0.08 && duration >= TURN.minTurnMs / 1000;
     if (!speechLike) return null;
     // The 60 ms open lets a breathy vowel start. A pure blip never builds on that:
@@ -669,7 +671,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     if (hopPeakMs < 100 && hopVoicedMs < 200) return null;
     if (!tooNoisy) noiseWarned = false;
     turns++;
-    const turn = { samples, sampleRate, duration, reason, ...analysis, snrDb, trackerSnr, tooNoisy };
+    const turn = { samples, sampleRate, duration, reason, ...analysis, snrDb, trackerSnr, tooNoisy, hopVoicedMs };
     onTurn?.(turn);
     return turn;
   }
@@ -756,7 +758,6 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
           } else voicedMs = Math.max(0, voicedMs - hopMs);
         } else {
           appendUtterance(raw);
-          if (hopCount < hopRms.length) hopRms[hopCount++] = rawRms;
           if (decision.voiced) quietMs = 0;
           else quietMs += hopMs;
           if (quietMs >= TURN.endSilenceMs) finish('silence');
@@ -802,6 +803,18 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
       return { turns, inSpeech, speaking, utteranceSamples: uttLen, bufferCap: utterance.length };
     }
   };
+}
+
+function speechSpanRms(samples, frames, sampleRate) {
+  const voiced = frames.filter(frame => frame.voiced && Number.isFinite(frame.t));
+  if (!voiced.length || !samples?.length) return 0;
+  const half = (FRAME / 2) / sampleRate;
+  const start = Math.max(0, Math.floor((voiced[0].t - half) * sampleRate));
+  const end = Math.min(samples.length, Math.ceil((voiced[voiced.length - 1].t + half) * sampleRate));
+  if (end - start < 2) return 0;
+  let energy = 0;
+  for (let i = start; i < end; i++) energy += samples[i] * samples[i];
+  return Math.sqrt(energy / (end - start));
 }
 
 function biquad(sampleRate, cutoff) {

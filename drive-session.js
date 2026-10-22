@@ -46,13 +46,6 @@ function zeroCrossingRate(samples) {
   return crossings / samples.length;
 }
 
-function rmsOf(samples) {
-  if (!samples?.length) return 0;
-  let energy = 0;
-  for (let i = 0; i < samples.length; i++) energy += samples[i] * samples[i];
-  return Math.sqrt(energy / samples.length);
-}
-
 function lowEnding(voiced) {
   const run = [];
   for (let index = voiced.length - 1; index >= 0; index--) {
@@ -97,7 +90,6 @@ export function describeTake(samples, sampleRate = 16000) {
   const f0 = pitchOf(hzs);
   const cv = variation(hzs);
   const conf = median(voiced.map(frame => frame.confidence));
-  const rms = rmsOf(samples);
   const crossings = zeroCrossingRate(samples);
   let profile = null;
   if (voiced.length >= 8 && Number.isFinite(f0) && Number.isFinite(formant)) {
@@ -134,9 +126,10 @@ export function describeTake(samples, sampleRate = 16000) {
   // A 20 dB breathy vowel leaves about 15 voiced frames once the live turn trims it.
   // Road noise that merely covers a clear vowel raises spectral flatness; the breath cue stays on the tonal body.
   const breathThrough = steadyHigh && body.length >= 9 && bodyConf < 0.75 && bodyH1 > -16 && bodyFlat < 0.05 && !maskedTail;
-  if (voiced.length < 8) {
-    if (rms >= 0.12) cueId = 'too-noisy';
-  } else if (ending?.irregular) cueId = 'vocal-fry';
+  // Under eight voiced frames there is nothing to judge. A high level on the
+  // whole buffer is the closing floor or a blip, not a loud ambient floor.
+  if (voiced.length < 8) cueId = null;
+  else if (ending?.irregular) cueId = 'vocal-fry';
   else if (smoothFall) cueId = 'pitch-drop-end';
   else if (f0 < 112 && formant >= 1600 && cv >= 0.008 && cv < 0.08 && conf < 0.85 && voiced.length >= 12) cueId = 'vocal-fry';
   else if (f0 >= 100 && f0 < 145 && formant >= 1650 && cv < 0.008 && conf >= 0.9) cueId = 'pitch-low';

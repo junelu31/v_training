@@ -308,6 +308,8 @@ export function reviewLiveTurn(turn, coachSession, { goal, at = Date.now(), prom
     cursor: coachSession.status().cursor
   });
   const text = spokenLine(turn, local);
+  // A blip or a one-beat tone is too short to judge. Say nothing and do not log it.
+  if (!text && !turn.tooNoisy && turn.hopVoicedMs < 200) return { ignored: true, events: [] };
   if (local.feedback) local.feedback = { ...local.feedback, text, spoken: Boolean(text) };
   return coachSession.noteAnalysis(local, { transcript: linePrompt, at });
 }
