@@ -6,7 +6,7 @@
 import { analyzePcm, createTurnDetector } from './drive-dsp.js';
 
 const LINES = {
-  'pitch-low': 'Hum, and bring the pitch up a little.',
+  'pitch-low': 'Hum the next word, and bring the pitch up a little.',
   'pitch-drop-end': 'Lift the end of the word with a small hum.',
   'vocal-fry': 'Keep breath flowing through the last word, and lift the pitch a little so the end does not creak.',
   'resonance-dark': 'Move the tongue more forward, toward the front of the mouth.',
@@ -118,9 +118,22 @@ export function describeTake(samples, sampleRate = 16000) {
   const body = voiced.filter(frame => frame.t <= (voiced[voiced.length - 1]?.t || 0) * 0.8);
   const bodyH1 = median(body.map(frame => frame.h1h2));
   const bodyConf = median(body.map(frame => frame.confidence));
-  const duration = samples.length / sampleRate;
-  const maskedTail = voiced.length > 0 && duration - voiced[voiced.length - 1].t > 0.34;
-  const breathThrough = steadyHigh && body.length >= 12 && bodyConf < 0.75 && bodyH1 > -16 && !maskedTail;
+  const bodyFlat = median(body.map(frame => frame.flatness));
+  // A live turn keeps the closing quiet inside the buffer. That quiet is under
+  // the noise floor, so the phrase ends at the last frame above the floor.
+  // A fry tail that noise has already replaced stays loud and unvoiced, and
+  // that loud tail is still the end of the phrase.
+  const phraseEnd = analysis.frames.reduce((end, frame) => frame.rms > analysis.noiseFloor ? frame.t : end, 0);
+  const maskedTail = voiced.length > 0 && phraseEnd - voiced[voiced.length - 1].t > 0.34;
+  const speechStart = voiced[0]?.t ?? 0;
+  const speechEnd = voiced[voiced.length - 1]?.t ?? 0;
+  const speechFrames = analysis.frames.filter(frame => frame.t >= speechStart && frame.t <= speechEnd);
+  const speechVoicedFraction = speechFrames.length
+    ? speechFrames.filter(frame => frame.voiced).length / speechFrames.length
+    : 0;
+  // A 20 dB breathy vowel leaves about 15 voiced frames once the live turn trims it.
+  // Road noise that merely covers a clear vowel raises spectral flatness; the breath cue stays on the tonal body.
+  const breathThrough = steadyHigh && body.length >= 9 && bodyConf < 0.75 && bodyH1 > -16 && bodyFlat < 0.05 && !maskedTail;
   if (voiced.length < 8) {
     if (rms >= 0.12) cueId = 'too-noisy';
   } else if (ending?.irregular) cueId = 'vocal-fry';
@@ -128,7 +141,7 @@ export function describeTake(samples, sampleRate = 16000) {
   else if (f0 < 112 && formant >= 1600 && cv >= 0.008 && cv < 0.08 && conf < 0.85 && voiced.length >= 12) cueId = 'vocal-fry';
   else if (f0 >= 100 && f0 < 145 && formant >= 1650 && cv < 0.008 && conf >= 0.9) cueId = 'pitch-low';
   else if (formant < 1400 && f0 >= 165 && cv < 0.02) cueId = 'resonance-dark';
-  else if (breathThrough && analysis.voicedFraction >= 0.3 && analysis.voicedFraction < 0.75 && conf < 0.75 && formant >= 1650 && voiced.length >= 18 && crossings < 0.16 && analysis.snrDb >= 6) cueId = 'breathiness';
+  else if (breathThrough && speechVoicedFraction >= 0.3 && speechVoicedFraction < 0.75 && conf < 0.75 && formant >= 1650 && voiced.length >= 15 && crossings < 0.16 && analysis.snrDb >= 6) cueId = 'breathiness';
   return {
     profile: cueId === 'too-noisy' ? null : profile,
     cueId,

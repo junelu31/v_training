@@ -562,7 +562,8 @@ function sustainedLowRun(voiced, reference) {
 }
 
 export const TURN = {
-  minVoicedMs: 100,
+  // A breathy vowel under moderate road noise only stays voiced for about three hops.
+  minVoicedMs: 60,
   endSilenceMs: 560,
   minTurnMs: 450,
   maxTurnSec: 12,
