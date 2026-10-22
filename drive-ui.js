@@ -290,8 +290,12 @@ async function finishSession(entry) {
   if (overlay) overlay.hidden = true;
 }
 
-function spokenLine(turn) {
-  return readTurn(turn).text || '';
+function spokenLine(turn, local) {
+  const take = readTurn(turn);
+  if (take.text) return take.text;
+  const issues = new Set((local?.confident || []).map(item => item.issue));
+  if ((issues.has('fry') || issues.has('drop')) && local?.feedback?.text) return local.feedback.text;
+  return '';
 }
 
 export function reviewLiveTurn(turn, coachSession, { goal, at = Date.now(), prompt } = {}) {
@@ -302,7 +306,7 @@ export function reviewLiveTurn(turn, coachSession, { goal, at = Date.now(), prom
     goal,
     cursor: coachSession.status().cursor
   });
-  const text = spokenLine(turn);
+  const text = spokenLine(turn, local);
   if (local.feedback) local.feedback = { ...local.feedback, text, spoken: Boolean(text) };
   return coachSession.noteAnalysis(local, { transcript: linePrompt, at });
 }
@@ -316,7 +320,7 @@ async function onTurn(turn) {
     goal: savedDeps.getGoal(),
     cursor: session.status().cursor
   });
-  const localText = spokenLine(turn);
+  const localText = spokenLine(turn, local);
   if (localText) {
     lastFeedback = localText;
     show(localText, prompt || '');
@@ -361,7 +365,8 @@ async function onTurn(turn) {
     ear,
     cursor: session.status().cursor
   }) : local;
-  if (judged.feedback) judged.feedback = { ...judged.feedback, text: localText, spoken: Boolean(localText) };
+  const heardText = spokenLine(turn, judged) || localText;
+  if (judged.feedback) judged.feedback = { ...judged.feedback, text: heardText, spoken: Boolean(heardText) };
   const noted = session.noteAnalysis(judged, { transcript: heard || prompt, at: clock ? clock() : Date.now() });
   await voicePromise;
   if (noted.ignored) return;

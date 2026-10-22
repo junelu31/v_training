@@ -53,6 +53,22 @@ function rmsOf(samples) {
   return Math.sqrt(energy / samples.length);
 }
 
+function lowEnding(voiced) {
+  const run = [];
+  for (let index = voiced.length - 1; index >= 0; index--) {
+    if (!(voiced[index].hz < 112)) break;
+    run.push(voiced[index]);
+  }
+  if (run.length < 8) return null;
+  const pitch = stats(run.map(frame => frame.hz));
+  const conf = median(run.map(frame => frame.confidence));
+  const fry = median(run.map(frame => frame.fry));
+  const rms = median(run.map(frame => frame.rms));
+  if (!(pitch.med < 112) || !(rms >= 0.02)) return null;
+  const irregular = fry >= 0.45 || conf < 0.7 || pitch.std >= 12;
+  return { ...pitch, conf, fry, rms, irregular };
+}
+
 function pitchOf(hzs) {
   if (!hzs.length) return NaN;
   const low = hzs.filter(hz => hz < 150);
@@ -90,6 +106,9 @@ export function describeTake(samples, sampleRate = 16000) {
     else profile = 'androgynous';
   }
   let cueId = null;
+  // Fry at the end of a higher phrase never moves the whole-turn median under 112 Hz.
+  // Score the contiguous low ending on its own: jitter, or low confidence that still has energy.
+  const ending = lowEnding(voiced);
   // A real fall stays low for the whole tail. An octave flicker was already
   // folded back to the higher pitch, so the tail median matches the head.
   const smoothFall = head.n >= 8 && tail.n >= 8 && head.std < 8 && tail.std < 22
@@ -98,7 +117,8 @@ export function describeTake(samples, sampleRate = 16000) {
     && head.std < 18 && tail.std < 18 && Math.abs((head.med || 0) - (tail.med || 0)) < 25;
   if (voiced.length < 8) {
     if (rms >= 0.12) cueId = 'too-noisy';
-  } else if (smoothFall) cueId = 'pitch-drop-end';
+  } else if (ending?.irregular) cueId = 'vocal-fry';
+  else if (smoothFall) cueId = 'pitch-drop-end';
   else if (f0 < 112 && formant >= 1600 && cv >= 0.008 && cv < 0.08 && conf < 0.85 && voiced.length >= 12) cueId = 'vocal-fry';
   else if (f0 >= 100 && f0 < 145 && formant >= 1650 && cv < 0.008 && conf >= 0.9) cueId = 'pitch-low';
   else if (formant < 1400 && f0 >= 165 && cv < 0.02) cueId = 'resonance-dark';
