@@ -2,14 +2,17 @@
 // or with --manifest writes drive-voice-clips.js from the clips that exist.
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { clipFile, fixedVoiceLines, voiceKey } from '../drive-voice.js';
+import { clipFile, fixedVoiceLines, fragmentKey, fragmentLines, voiceKey } from '../drive-voice.js';
 
 globalThis.window = {};
 await import('../course.js');
 const content = globalThis.window.COURSE_CONTENT;
 const ids = new Set(content.drives.flatMap(drive => drive.lines));
 const phrases = content.drills.filter(drill => ids.has(drill.id)).map(drill => drill.phrase).filter(Boolean);
-const lines = fixedVoiceLines(phrases).map(text => ({ text, key: voiceKey(text), file: clipFile(text) }));
+const lines = [
+  ...fixedVoiceLines(phrases).map(text => ({ text, key: voiceKey(text), file: clipFile(text) })),
+  ...fragmentLines(phrases).map(text => ({ text, key: fragmentKey(text), file: clipFile(fragmentKey(text)), fragment: true }))
+];
 
 if (process.argv.includes('--manifest')) {
   const clips = Object.fromEntries(lines.filter(line => existsSync(`public/${line.file}`)).map(line => [line.key, line.file]));

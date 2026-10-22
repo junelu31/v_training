@@ -202,8 +202,13 @@ function audioElement() {
   return player;
 }
 
-function hasClip(text) {
-  return Boolean(VOICE_CLIPS[voiceKey(text)]);
+// Fragment keys start with ~ and are already normalized.
+function clipUrl(key) {
+  return VOICE_CLIPS[key.startsWith('~') ? key : voiceKey(key)];
+}
+
+function hasClip(key) {
+  return Boolean(clipUrl(key));
 }
 
 // Resolves true when the URL played to the end and false when it failed or was cut off.
@@ -261,8 +266,8 @@ function stopSpeech() {
 
 async function playPart(part, token) {
   if (part.clip) {
-    if (await playUrl(VOICE_CLIPS[voiceKey(part.clip)])) return true;
-    return token === speechToken && speakDevice(part.clip);
+    if (await playUrl(clipUrl(part.clip))) return true;
+    return token === speechToken && speakDevice(part.clip.replace(/^~/, ''));
   }
   // A line that names a word or a count is built at runtime. Cloud speech uses a similar voice.
   const bytes = await cloudSpeech(part.text);

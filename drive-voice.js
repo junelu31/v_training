@@ -1,9 +1,10 @@
 // Spoken lines for Drive coach. Every fixed line has a pre-rendered clip under
 // public/voice, so the coach sounds like one natural voice. A line that names a
-// word or a count is built at runtime and has no clip; the player speaks that
-// part with cloud speech or the device voice.
+// word or a count is stitched from fragment clips: each word of the drive
+// phrases, each problem phrase, the summary words and the numbers 0 to 199.
+// Only a part no fragment covers falls back to cloud speech or the device voice.
 
-import { CUE_LIBRARY } from './drive-cues.js';
+import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
 import { SESSION_LINES } from './drive-session.js';
 
 // Lines from drive-coach.js commands and checks. tests/drive-voice.test.mjs fails if one is missing.
@@ -40,6 +41,55 @@ export function voiceKey(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/** Words of a runtime part, without punctuation or quotes, as fragment keys use them. */
+export function fragmentWords(text) {
+  return String(text || '').toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^a-z0-9']+/g, ' ')
+    .split(' ').map(word => word.replace(/^'+|'+$/g, '')).filter(Boolean);
+}
+
+export function fragmentKey(text) {
+  return `~${fragmentWords(text).join(' ')}`;
+}
+
+export const SUMMARY_FRAGMENTS = ['phrases', 'held', 'had a note', 'too noisy to coach'];
+export const MAX_COUNT = 199;
+
+export function fragmentLines(phrases = []) {
+  const words = new Set(phrases.flatMap(fragmentWords));
+  const problems = new Set();
+  for (const a of ISSUE_ORDER) {
+    problems.add(problemPhrase([a]));
+    for (const b of ISSUE_ORDER) if (a !== b) problems.add(problemPhrase([a, b]));
+  }
+  const improved = IMPROVED_LINES.flatMap(line => line.split(/'?\{word\}'?/)).map(part => part.trim()).filter(Boolean);
+  const counts = Array.from({ length: MAX_COUNT + 1 }, (_, n) => String(n));
+  const all = [...words, ...problems, ...improved, ...SUMMARY_FRAGMENTS, ...counts];
+  const seen = new Map();
+  for (const line of all) {
+    const key = fragmentKey(line);
+    if (key !== '~' && !seen.has(key)) seen.set(key, fragmentWords(line).join(' '));
+  }
+  return [...seen.values()];
+}
+
+// Covers a runtime part with fragment clips, longest run first. Returns null when any word is uncovered,
+// so the whole part goes to one fallback voice instead of switching voices mid-sentence.
+function stitch(text, hasClip) {
+  const words = fragmentWords(text);
+  const parts = [];
+  let i = 0;
+  while (i < words.length) {
+    let found = 0;
+    for (let j = words.length; j > i; j--) {
+      if (hasClip(`~${words.slice(i, j).join(' ')}`)) { found = j; break; }
+    }
+    if (!found) return null;
+    parts.push({ clip: `~${words.slice(i, found).join(' ')}` });
+    i = found;
+  }
+  return parts.length ? parts : null;
+}
+
 export function fixedVoiceLines(phrases = []) {
   const cues = Object.values(CUE_LIBRARY).flatMap(entry => entry.variants);
   const all = [...Object.values(SESSION_LINES), ...cues, ...COACH_LINES, ...LEAD_LINES, ...phrases];
@@ -71,12 +121,12 @@ export function planSpeech(text, hasClip) {
       i += 1;
     }
   }
-  return plan;
+  return plan.flatMap(part => ('text' in part ? stitch(part.text, hasClip) || [part] : [part]));
 }
 
 export function clipFile(text) {
   let hash = 0x811c9dc5;
-  for (const char of voiceKey(text)) {
+  for (const char of text.startsWith('~') ? text : voiceKey(text)) {
     hash ^= char.codePointAt(0);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }

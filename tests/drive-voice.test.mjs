@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, statSync, existsSync } from 'node:fs';
-import { CUE_LIBRARY } from '../drive-cues.js';
+import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
 import { SESSION_LINES } from '../drive-session.js';
 import { followUpLine, openingLine } from '../drive-coach.js';
-import { COACH_LINES, clipFile, planSpeech, voiceKey } from '../drive-voice.js';
+import { COACH_LINES, clipFile, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
 import { VOICE_CLIPS } from '../drive-voice-clips.js';
 
-const has = text => Boolean(VOICE_CLIPS[voiceKey(text)]);
+const has = text => Boolean(VOICE_CLIPS[text.startsWith("~") ? text : voiceKey(text)]);
 globalThis.window = {};
 await import('../course.js');
 const content = globalThis.window.COURSE_CONTENT;
@@ -38,9 +38,34 @@ test('opening and follow-up lines play entirely from clips', () => {
   assert.ok(planSpeech(openingLine(''), has).every(part => part.clip));
 });
 
-test('a line that names a word keeps the word at runtime and the cue as a clip', () => {
+test('a line that names a word is stitched from Bella fragments, not a second voice', () => {
   const cue = CUE_LIBRARY.fry.variants[0];
-  const plan = planSpeech(`Arriving fell into fry. ${cue}`, has);
-  assert.deepEqual(plan, [{ text: 'Arriving fell into fry.' }, { clip: cue }]);
-  assert.deepEqual(planSpeech('12 phrases. 9 held, 3 had a note.', has), [{ text: '12 phrases. 9 held, 3 had a note.' }]);
+  assert.deepEqual(planSpeech(`Arriving fell into fry. ${cue}`, has), [{ clip: '~arriving' }, { clip: '~fell into fry' }, { clip: cue }]);
+  const words = [...new Set(phrases.flatMap(fragmentWords))];
+  const problems = ISSUE_ORDER.flatMap(a => [problemPhrase([a]), ...ISSUE_ORDER.filter(b => b !== a).map(b => problemPhrase([a, b]))]);
+  for (const word of words) {
+    for (const problem of problems) {
+      const plan = planSpeech(`${word} ${problem}. ${cue}`, has);
+      assert.ok(plan.every(part => part.clip), `runtime part in: ${word} ${problem}`);
+    }
+    for (const template of IMPROVED_LINES) {
+      const plan = planSpeech(fillWord(template, word), has);
+      assert.ok(plan.every(part => part.clip), `runtime part in: ${fillWord(template, word)}`);
+    }
+  }
+  // Words with curly apostrophes in the course text still match.
+  assert.ok(planSpeech('I\u2019m dropped.', has).every(part => part.clip));
+});
+
+test('the summary is stitched up to 199 phrases and falls back above that', () => {
+  const plan = planSpeech('12 phrases. 9 held, 3 had a note, 2 too noisy to coach.', has);
+  assert.deepEqual(plan.map(part => part.clip), ['~12', '~phrases', '~9', '~held', '~3', '~had a note', '~2', '~too noisy to coach']);
+  assert.ok(planSpeech('199 phrases. 150 held, 49 had a note.', has).every(part => part.clip));
+  assert.deepEqual(planSpeech('240 phrases. 200 held, 40 had a note.', has), [{ text: '240 phrases. 200 held, 40 had a note.' }]);
+  assert.deepEqual(planSpeech('Zebra dropped.', has), [{ text: 'Zebra dropped.' }], 'an unknown word sends the whole part to one fallback voice');
+});
+
+test('all clips together stay under 4 MB', () => {
+  const total = Object.values(VOICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
+  assert.ok(total < 4 * 1024 * 1024, `clips total ${total} bytes`);
 });
