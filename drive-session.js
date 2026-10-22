@@ -5,7 +5,7 @@
 
 import { analyzePcm, createTurnDetector } from './drive-dsp.js';
 
-const LINES = {
+export const SESSION_LINES = {
   'pitch-low': 'Hum the next word, and bring the pitch up a little.',
   'pitch-drop-end': 'Lift the end of the word with a small hum.',
   'vocal-fry': 'Keep breath flowing through the last word, and lift the pitch a little so the end does not creak.',
@@ -138,7 +138,7 @@ export function describeTake(samples, sampleRate = 16000) {
   return {
     profile: cueId === 'too-noisy' ? null : profile,
     cueId,
-    text: cueId ? LINES[cueId] : '',
+    text: cueId ? SESSION_LINES[cueId] : '',
     tooNoisy: cueId === 'too-noisy',
     f0,
     f2: formant
@@ -149,7 +149,7 @@ export function describeTake(samples, sampleRate = 16000) {
 export function readTurn(turn) {
   if (!turn) return { text: '', cueId: null, profile: null, tooNoisy: false };
   if (turn.tooNoisy || turn.reason === 'noise') {
-    return { text: LINES['too-noisy'], cueId: 'too-noisy', profile: null, tooNoisy: true };
+    return { text: SESSION_LINES['too-noisy'], cueId: 'too-noisy', profile: null, tooNoisy: true };
   }
   if (!turn.samples?.length) return { text: '', cueId: null, profile: null, tooNoisy: false };
   return describeTake(turn.samples, turn.sampleRate || 16000);
