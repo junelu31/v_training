@@ -535,6 +535,11 @@ export function createCoachSession({
     noteAnalysis(result, { transcript = '', at = Date.now() } = {}) {
       clock = at;
       if (paused || stopped) return { ignored: true };
+      // Sustained loud noise may say so once. The same status does not go into the
+      // phrase log again until a real phrase has been heard.
+      if (result.tooNoisy && phrases.length && phrases[phrases.length - 1].tooNoisy) {
+        return { ignored: true, events: [] };
+      }
       phraseCount += 1;
       coachedPhrases += result.feedback?.spoken ? 1 : 0;
       const strainy = result.confident?.some(flag => flag.issue === 'strain' || flag.issue === 'fry');

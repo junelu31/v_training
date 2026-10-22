@@ -17,6 +17,7 @@ let stream = null;
 let savedDeps = null;
 let fileTest = false;
 let lastFeedback = '';
+let statusHeld = false;
 let guideRetired = false;
 let awaitingComfort = false;
 let clock = null;
@@ -321,11 +322,13 @@ async function onTurn(turn) {
     cursor: session.status().cursor
   });
   const localText = spokenLine(turn, local);
-  if (localText) {
+  const statusRepeat = /\btoo noisy\b/i.test(localText) && statusHeld;
+  if (localText && !statusRepeat) {
+    statusHeld = /\btoo noisy\b/i.test(localText);
     lastFeedback = localText;
     show(localText, prompt || '');
   }
-  const voicePromise = localText ? speakLocal(localText) : Promise.resolve();
+  const voicePromise = localText && !statusRepeat ? speakLocal(localText) : Promise.resolve();
   const cloud = await cloudTurn(turn.samples, turn.sampleRate, localText);
   if (!session || hiddenByPage || session.status().stopped) {
     await voicePromise;
@@ -371,6 +374,7 @@ async function onTurn(turn) {
   await voicePromise;
   if (noted.ignored) return;
   lastFeedback = judged.feedback.text;
+  statusHeld = /\btoo noisy\b/i.test(lastFeedback || '');
   for (const event of noted.events) {
     if (event.type === 'comfort-check') awaitingComfort = true;
     if (event.text && event.text !== localText) await say(event.text);
@@ -547,6 +551,7 @@ async function begin(ready, micPromise = null) {
     detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
     awaitingComfort = false;
     lastFeedback = '';
+    statusHeld = false;
     guideRetired = false;
     const guide = el('coachGuide');
     if (guide) guide.hidden = false;

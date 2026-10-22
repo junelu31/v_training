@@ -588,6 +588,9 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
   const filteredHop = new Float32Array(HOP);
   let voicedMs = 0;
   let quietMs = 0;
+  let runMs = 0;
+  let peakRunMs = 0;
+  let totalVoicedHopMs = 0;
   let inSpeech = false;
   let speaking = false;
   let guardSamples = 0;
@@ -646,6 +649,11 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     uttLen = 0;
     voicedMs = 0;
     quietMs = 0;
+    const hopPeakMs = peakRunMs;
+    const hopVoicedMs = totalVoicedHopMs;
+    peakRunMs = 0;
+    totalVoicedHopMs = 0;
+    runMs = 0;
     if (duration < TURN.minTurnMs / 1000) return;
     const analysis = analyzePcm(samples, sampleRate, { octave: true });
     const speechLevel = percentile(Array.from(levels), 0.62);
@@ -654,6 +662,12 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     const tooNoisy = !(snrDb >= TURN.snrCoachMin) || analysis.voicedFraction < 0.12;
     const speechLike = analysis.frames.some(frame => frame.voiced) && analysis.voicedFraction >= 0.08 && duration >= TURN.minTurnMs / 1000;
     if (!speechLike) return null;
+    // The 60 ms open lets a breathy vowel start. A pure blip never builds on that:
+    // its longest voiced run stays under 100 ms and the whole voiced stretch stays
+    // under 200 ms. The quiet that then closes the turn is not a phrase, and it
+    // must not be spoken as "too noisy".
+    if (hopPeakMs < 100 && hopVoicedMs < 200) return null;
+    if (!tooNoisy) noiseWarned = false;
     turns++;
     const turn = { samples, sampleRate, duration, reason, ...analysis, snrDb, trackerSnr, tooNoisy };
     onTurn?.(turn);
@@ -720,6 +734,11 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
         const rawRms = Math.sqrt(rawEnergy / HOP);
         if (!inSpeech) rawNoise = rawRms < rawNoise * 1.8 ? rawNoise * 0.9 + rawRms * 0.1 : rawNoise * 0.98 + rawRms * 0.02;
         const decision = classifyHop(filteredHop);
+        if (decision.voiced) {
+          runMs += hopMs;
+          totalVoicedHopMs += hopMs;
+          if (runMs > peakRunMs) peakRunMs = runMs;
+        } else runMs = 0;
         if (!inSpeech) noteLoud(rawRms, decision.voiced);
         if (!inSpeech) {
           if (decision.voiced) {
@@ -768,6 +787,9 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
       uttLen = 0;
       voicedMs = 0;
       quietMs = 0;
+      runMs = 0;
+      peakRunMs = 0;
+      totalVoicedHopMs = 0;
       speaking = false;
       guardSamples = 0;
       loudMs = 0;
