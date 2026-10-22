@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cuesMatching, isTooNoisyText } from './contract.mjs';
 import { loadCoach } from './load-coach.mjs';
-import { SAMPLE_RATE, rms, roadNoise, synthesizeVowel } from './signals.mjs';
+import { SAMPLE_RATE, mixAtSnr, rms, roadNoise, synthesizeVowel } from './signals.mjs';
 
 function technique(lines) {
   return lines.flatMap(line => cuesMatching(line));
@@ -38,6 +38,13 @@ function concat(parts) {
     out.set(part, at);
     at += part.length;
   }
+  return out;
+}
+
+function scaleDb(samples, db) {
+  const gain = 10 ** (db / 20);
+  const out = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) out[i] = samples[i] * gain;
   return out;
 }
 
@@ -118,6 +125,7 @@ test('short words still open a turn, clean and at 20 dB', async (t) => {
       const run = hear(coach, samples, name);
       console.log(JSON.stringify({ label, ...run }));
       if (run.turns < 1) misses.push(`${label} opened ${run.turns} turns`);
+      if (run.heard.some(isTooNoisyText)) misses.push(`${label} status ${run.heard.join(' | ')}`);
       const ids = technique(run.heard);
       if (ids.length) misses.push(`${label} technique ${ids.join(', ')}: ${run.heard.join(' | ')}`);
     }
@@ -125,7 +133,7 @@ test('short words still open a turn, clean and at 20 dB', async (t) => {
   assert.deepEqual(misses, []);
 });
 
-test('a 70 ms tone in digital silence is logged once and is not a technique cue', async (t) => {
+test('a 70 ms tone in digital silence gets no status line and no stored phrase', async (t) => {
   const coach = await coachParts();
   if (!coach.ok) {
     t.skip(coach.reason);
@@ -148,10 +156,9 @@ test('a 70 ms tone in digital silence is logged once and is not a technique cue'
   detector.flush();
   const distinct = [...new Set(heard)];
   console.log(JSON.stringify({ turns, phrases: session.status().phrases, heard: distinct }));
-  assert.ok(turns >= 1, `opened ${turns} turns`);
-  assert.equal(session.status().phrases, 1, `phrase log held ${session.status().phrases}`);
+  assert.equal(session.status().phrases, 0, `phrase log held ${session.status().phrases}`);
+  assert.deepEqual(distinct, []);
   assert.deepEqual(technique(heard), []);
-  assert.ok(distinct.every(isTooNoisyText), distinct.join(' | ') || '(silence)');
 });
 
 test('sustained loud noise is logged once until a real phrase', async (t) => {
@@ -187,4 +194,63 @@ test('sustained loud noise is logged once until a real phrase', async (t) => {
   assert.ok(session.status().phrases > afterPhrase);
   assert.deepEqual(technique(heard), []);
   assert.ok(heard.some(isTooNoisyText));
+});
+
+test('the same loud road at -12 dB and +6 dB never gets a technique cue', async (t) => {
+  const coach = await coachParts();
+  if (!coach.ok) {
+    t.skip(coach.reason);
+    return;
+  }
+  const scene = roadNoise(SAMPLE_RATE * 3, SAMPLE_RATE, 43, 'loud');
+  const misses = [];
+  for (const db of [-12, 0, 6]) {
+    const run = hear(coach, scaleDb(scene, db), 'ah');
+    console.log(JSON.stringify({ db, rms: +rms(scaleDb(scene, db)).toFixed(4), ...run }));
+    const ids = technique(run.heard);
+    if (ids.length) misses.push(`${db} dB technique ${ids.join(', ')}: ${run.heard.join(' | ')}`);
+    if (db >= 0 && !run.heard.some(isTooNoisyText)) misses.push(`${db} dB stayed silent`);
+  }
+  assert.deepEqual(misses, []);
+});
+
+test('speech at 5 and 10 dB on a quiet floor gets no technique cue', async (t) => {
+  const coach = await coachParts();
+  if (!coach.ok) {
+    t.skip(coach.reason);
+    return;
+  }
+  const speech = vowel({ f0: 205, f1: 360, f2: 2150, duration: 1.2, seed: 33 });
+  const misses = [];
+  for (const snrDb of [5, 10]) {
+    for (const floor of [0.04, 0.08]) {
+      const preN = Math.floor(SAMPLE_RATE * 0.3);
+      const noise = roadNoise(preN + speech.length + Math.floor(SAMPLE_RATE * 0.8), SAMPLE_RATE, 80, 'moderate');
+      const noiseLevel = rms(noise) || 1;
+      const floorGain = floor / noiseLevel;
+      const voiceGain = (floor * 10 ** (snrDb / 20)) / (rms(speech) || 1);
+      const out = new Float32Array(noise.length);
+      for (let i = 0; i < noise.length; i++) out[i] = noise[i] * floorGain;
+      for (let i = 0; i < speech.length; i++) out[preN + i] += speech[i] * voiceGain;
+      const run = hear(coach, out, 'ah');
+      console.log(JSON.stringify({ snrDb, floor, ...run }));
+      const ids = technique(run.heard);
+      if (ids.length) misses.push(`${snrDb} dB floor ${floor} technique ${ids.join(', ')}: ${run.heard.join(' | ')}`);
+    }
+  }
+  assert.deepEqual(misses, []);
+});
+
+test('a -15 dB mix still gets the status line', async (t) => {
+  const coach = await coachParts();
+  if (!coach.ok) {
+    t.skip(coach.reason);
+    return;
+  }
+  const speech = vowel({ f0: 205, f1: 360, f2: 2150, duration: 1.25, seed: 61 });
+  const loud = roadNoise(speech.length + SAMPLE_RATE, SAMPLE_RATE, 71, 'loud');
+  const run = hear(coach, mixAtSnr(speech, loud, -15), 'ah');
+  console.log(JSON.stringify(run));
+  assert.ok(run.heard.some(isTooNoisyText), run.heard.join(' | ') || '(silence)');
+  assert.deepEqual(technique(run.heard), []);
 });
