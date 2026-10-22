@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f1ea" />
     <meta name="description" content="Lilt — gender-affirming voice practice with private accounts and synced progress." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Lilt" />
     <title>Lilt — voice practice, made visible</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
       </head>
   <body>
@@ -14,7 +20,7 @@
       <form id="authForm" class="auth-card" novalidate>
         <span class="kicker">LILT · YOUR PRACTICE</span>
         <h1 id="authTitle">Welcome back.</h1>
-        <p>Sign in to keep your progress across devices. Your audio stays in this browser.</p>
+        <p>Sign in to keep your progress across devices. Practice recordings stay in this browser. Drive coach sends each phrase to Cloudflare.</p>
         <label>Email<input id="authEmail" type="email" autocomplete="email" required maxlength="254" /></label>
         <label>Password<input id="authPassword" type="password" autocomplete="current-password" required maxlength="128" /></label>
         <p id="authMessage" role="status" aria-live="polite">Checking your session…</p>
@@ -228,6 +234,8 @@
           <p class="kicker" id="driveLengthLabel">PLANNED LENGTH</p>
           <div class="drive-duration" id="driveDurations" role="group" aria-labelledby="driveLengthLabel"></div>
           <div class="drive-stack">
+            <button class="primary-button coach-start" id="startCoach" type="button">Start Drive coach</button>
+            <p class="coach-note">After you start, talk through the lines. Say next, repeat, pause, stop, or how am I doing. The screen stays on for the session. Switching apps pauses the coach until you come back.</p>
             <article class="settings-card">
               <span class="kicker">CUE</span>
               <h2 id="driveCue"></h2>
@@ -287,7 +295,7 @@
         </section>
 
         <section class="view" id="settingsView">
-          <div class="eyebrow">MAKE IT YOURS</div><h1>Settings</h1><p class="lede">Progress and acoustic scoring are saved to your account and computed on this device. A recording is uploaded only when you request Workers AI transcription; word locations then use Cloudflare’s returned timestamps.</p>
+          <div class="eyebrow">MAKE IT YOURS</div><h1>Settings</h1><p class="lede">Progress and acoustic scoring are saved to your account and computed on this device. Drive coach sends each phrase to Cloudflare for a transcript and a second listen. A recording is also uploaded when you request Workers AI transcription; word locations then use Cloudflare’s returned timestamps.</p>
           <div class="settings-grid">
             <article class="settings-card"><span class="kicker">VOICE GOAL</span><h2>Choose a direction</h2><p>Presets are starting points. Tune them to your anatomy, comfort, culture, and expression.</p><div id="presetCards"></div></article>
             <article class="settings-card"><span class="kicker">PRIVACY &amp; DATA</span><h2>Your account, your progress</h2><label class="toggle-row"><span><b>Save audio with attempts</b><small>Uses IndexedDB in this browser; audio does not sync</small></span><input type="checkbox" id="saveAudioToggle" /></label><button class="secondary-button full" id="exportData">Export progress JSON</button><button class="secondary-button full" id="importLocal" hidden>Import previous browser progress</button><button class="secondary-button danger full" id="resetData">Reset account progress</button></article>
@@ -301,12 +309,22 @@
     <div class="modal-backdrop" id="modalBackdrop" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <button class="modal-close" id="modalClose" aria-label="Close">×</button>
-        <span class="kicker">PRIVATE BY DEFAULT</span><h2 id="modalTitle">Your voice stays here.</h2>
-        <p>Acoustic scoring runs in this browser. Progress is saved to your account. When you choose Analyze words with Workers AI, this recording is sent to Cloudflare for transcription and timestamped segments; the app does not retain the uploaded recording. Browser speech recognition, when available, may also use your browser vendor’s service.</p>
+        <span class="kicker">SENT TO CLOUDFLARE</span><h2 id="modalTitle">Drive coach sends each phrase to Cloudflare.</h2>
+        <p>Acoustic scoring runs in this browser. Progress is saved to your account. Drive coach sends each phrase to Cloudflare for a transcript and a second listen, and does not keep that audio. When you choose Analyze words with Workers AI, that recording is sent to Cloudflare for transcription and timestamped segments. Browser speech recognition, when available, may also use your browser vendor’s service.</p>
         <button class="primary-button" id="modalOkay">Got it</button>
       </div>
     </div>
 
+    <video id="coachStayAwake" class="coach-stay-awake" muted playsinline webkit-playsinline loop preload="auto" src="stay-awake.mp4" aria-hidden="true"></video>
+    <div id="coachOverlay" class="coach-overlay" hidden tabindex="-1">
+      <p class="coach-kicker" id="coachKicker">DRIVE COACH</p>
+      <h1 id="coachLine">Listening.</h1>
+      <p id="coachSub" class="coach-sub"></p>
+      <p id="coachGuide" class="coach-guide">Switching apps pauses the coach until you come back.</p>
+      <p id="coachAwake" class="coach-awake" hidden></p>
+      <button class="primary-button coach-resume" id="coachResume" type="button" hidden>Tap to continue</button>
+      <p id="coachTestRow" hidden><label>Test audio<input id="coachFile" type="file" accept="audio/*,video/*" /></label></p>
+    </div>
     <script src="course.js"></script>
     <script type="module" src="app.js"></script>
   </body>

@@ -8,8 +8,9 @@
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "deploy": "npm run build && wrangler deploy",
-    "check": "node --check app.js && node --check client-logic.js && node --check worker/index.js",
-    "test": "node --test tests/*.test.mjs"
+    "check": "node --check app.js && node --check client-logic.js && node --check worker/index.js && node --check drive-coach.js && node --check drive-session.js && node --check drive-dsp.js && node --check drive-ui.js && node --check drive-cues.js && node --check drive-wake.js",
+    "qa": "node --expose-gc --test qa/*.test.mjs",
+    "test": "node --expose-gc --test tests/*.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.0"
