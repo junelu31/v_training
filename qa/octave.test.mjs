@@ -300,7 +300,7 @@ test('pitch, drop, and fry are spoken as a physical action', async (t) => {
     vowel({ f0: 92, f1: 400, f2: 1900, fry: true, jitter: 0.035, duration: 0.42, seed: 83 })
   ]);
   const cases = [
-    [vowel({ f0: 108, f1: 400, f2: 2000, duration: 1.3, seed: 94 }), 'Hum, and bring the pitch up a little.'],
+    [vowel({ f0: 108, f1: 400, f2: 2000, duration: 1.3, seed: 94 }), 'Hum the next word, and bring the pitch up a little.'],
     [vowel({ f0: 205, f0End: 96, f1: 380, f2: 2000, duration: 1.4, seed: 87 }), 'Lift the end of the word with a small hum.'],
     [fry, 'Keep breath flowing through the last word, and lift the pitch a little so the end does not creak.']
   ];
