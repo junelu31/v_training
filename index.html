@@ -6,95 +6,24 @@
     <meta name="theme-color" content="#f4f1ea" />
     <meta name="description" content="Lilt — gender-affirming voice practice with private accounts and synced progress." />
     <title>Lilt — voice practice, made visible</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
-    <style>
-      @font-face { font-family: "DM Sans"; src: local("Arial"); }
-      @font-face { font-family: "Manrope"; src: local("Arial"); }
-      body { overflow-x: hidden; }
-      .main { overflow: hidden; }
-      .view { width: 100%; }
-      h1, h2, h3, blockquote, .brand, .lede, .lesson-number,
-      .weekly-ring strong, .metric strong, .score-orbit strong,
-      .stat-card strong { font-family: Arial, sans-serif !important; }
-      .course-progress { margin: 34px 0 20px; padding: 22px 25px; border: 1px solid var(--line); border-radius: 13px; display: grid; grid-template-columns: 230px 1fr; align-items: center; gap: 24px; }
-      .course-progress strong { display: block; margin-top: 6px; font-size: 13px; }
-      .course-progress-track { height: 8px; overflow: hidden; border-radius: 10px; background: var(--paper-2); }
-      .course-progress-track i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--coral); transition: width .35s ease; }
-      .course-weeks { display: grid; gap: 16px; }
-      .course-week { display: grid; grid-template-columns: 84px 1fr; gap: 0; border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: rgba(255,255,255,.25); }
-      .course-week.current { border-color: #d69a86; box-shadow: var(--shadow); }
-      .week-number { padding: 28px 20px; background: var(--paper-2); font: 500 30px Arial,sans-serif; color: #98a09b; }
-      .course-week.current .week-number { background: var(--coral); color: white; }
-      .week-body { padding: 25px; }
-      .week-body h2 { margin: 6px 0; font-size: 23px; }
-      .week-body > p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 1.55; }
-      .session-list { display: grid; }
-      .session-row { display: grid; grid-template-columns: 58px 190px 1fr 72px; align-items: center; gap: 12px; width: 100%; border: 0; border-top: 1px solid var(--line); padding: 13px 4px; text-align: left; background: transparent; }
-      .session-row span,.session-row small,.session-row i { font-size: 10px; color: var(--muted); font-style: normal; }
-      .session-row b { font-size: 12px; }
-      .session-row i { text-align: right; }
-      .session-row.complete span { color: var(--sage-dark); }
-      .session-row.next { color: var(--coral-dark); }
-      .adjustment-list { display: grid; gap: 8px; margin: 18px 0; text-align: left; }
-      .adjustment { padding: 12px 14px; border-radius: 8px; background: var(--paper); border-left: 3px solid var(--coral); }
-      .adjustment strong { display: block; font-size: 11px; margin-bottom: 4px; }
-      .adjustment p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
-      .self-check { margin: 18px 0; padding: 16px; border-radius: 9px; background: #eef0e9; text-align: left; }
-      .self-check label { display: block; margin-top: 13px; font-size: 11px; }
-      .self-check output { float: right; color: var(--muted); }
-      .self-check input { display: block; width: 100%; margin-top: 8px; accent-color: var(--coral); }
-      .observation-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 8px; margin-top: 20px; }
-      .observation { padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
-      .observation span,.observation strong,.observation small { display: block; }
-      .observation span,.observation small { font-size: 9px; color: var(--muted); }
-      .observation strong { margin: 5px 0; font-size: 16px; }
-      .cloud-analysis { width: 100%; margin-top: 12px; }
-      .cloud-analysis-note { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
-      .analysis-status { min-height: 20px; color: var(--muted); font-size: 10px; line-height: 1.5; text-align: left; }
-      .word-findings { display: grid; gap: 10px; margin-top: 18px; }
-      .word-finding { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fffdfa; }
-      .word-finding-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-      .word-finding-head strong { font: 600 14px Arial,sans-serif; }
-      .word-finding-head small { color: var(--muted); font-size: 9px; }
-      .word-finding p { margin: 8px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
-      .word-finding button { margin-top: 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; font-size: 10px; }
-      .word-finding .finding-tag { border-radius: 20px; padding: 4px 7px; background: #f0e4db; color: #805449; font-size: 9px; }
-      .drive-today { margin-top: 18px; }
-      .drive-today .secondary-button { margin-top: 14px; }
-      .drive-duration { display: flex; gap: 8px; flex-wrap: wrap; margin: 28px 0 8px; }
-      .drive-stack { display: grid; gap: 14px; margin-top: 16px; }
-      .drive-line { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.35); }
-      .drive-line b, .drive-line p { display: block; }
-      .drive-line p { margin: 6px 0 0; font: 500 16px Arial, sans-serif; line-height: 1.4; }
-      .drive-block p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
-      .drive-block p b { color: var(--ink); font-size: 13px; }
-      .drive-how { margin-top: 12px; }
-      .drive-how summary { cursor: pointer; font-size: 12px; font-weight: 600; }
-      .drive-how ol { margin: 10px 0 0; padding-left: 18px; }
-      .drive-how li { color: var(--muted); font-size: 12px; line-height: 1.55; }
-      .drive-how li + li { margin-top: 8px; }
-      .drive-check { display: grid; gap: 14px; margin-top: 16px; text-align: left; }
-      .drive-check label { font-size: 12px; }
-      .drive-check output { float: right; color: var(--muted); }
-      .drive-check input[type=range] { display: block; width: 100%; margin-top: 8px; accent-color: var(--coral); }
-      @media(max-width:700px){.course-progress{grid-template-columns:1fr}.course-week{grid-template-columns:1fr}.week-number{padding:16px 22px}.session-row{grid-template-columns:48px 1fr 55px}.session-row small{display:none}.observation-grid{grid-template-columns:1fr}}
-    </style>
-  </head>
+      </head>
   <body>
     <section id="authScreen" class="auth-screen" aria-labelledby="authTitle">
-      <form id="authForm" class="auth-card">
+      <form id="authForm" class="auth-card" novalidate>
         <span class="kicker">LILT · YOUR PRACTICE</span>
         <h1 id="authTitle">Welcome back.</h1>
         <p>Sign in to keep your progress across devices. Your audio stays in this browser.</p>
         <label>Email<input id="authEmail" type="email" autocomplete="email" required maxlength="254" /></label>
-        <label>Password<input id="authPassword" type="password" autocomplete="current-password" required minlength="12" maxlength="128" /></label>
+        <label>Password<input id="authPassword" type="password" autocomplete="current-password" required maxlength="128" /></label>
         <p id="authMessage" role="status" aria-live="polite">Checking your session…</p>
         <button id="authSubmit" class="primary-button full" type="submit">Sign in</button>
         <button id="authMode" class="secondary-button full" type="button">Create an account</button>
       </form>
     </section>
     <div class="app-shell" id="appShell" hidden>
-      <aside class="sidebar" aria-label="Primary navigation">
+      <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
         <a class="brand" href="#today" aria-label="Lilt home">
           <span class="brand-mark" aria-hidden="true">
             <i></i><i></i><i></i><i></i><i></i>
@@ -125,8 +54,9 @@
       </aside>
 
       <main class="main">
+        <button type="button" id="drawerScrim" class="drawer-scrim" hidden aria-label="Close menu"></button>
         <header class="topbar">
-          <button class="icon-button menu-button" id="menuButton" aria-label="Open menu">☰</button>
+          <button class="icon-button menu-button" id="menuButton" aria-label="Open menu" aria-expanded="false" aria-controls="sidebar">☰</button>
           <div class="goal-pill">
             <span class="goal-dot"></span>
             <select id="goalSelect" aria-label="Voice goal"></select>
@@ -139,6 +69,16 @@
 
         <section class="view active" id="todayView">
           <div class="eyebrow" id="dateLabel"></div>
+          <div id="restBanner" class="rest-banner" hidden>
+            <span class="kicker">PAUSED FOR COMFORT</span>
+            <h2>Rest before the next drill</h2>
+            <p id="restBannerCopy"></p>
+            <div class="rest-actions">
+              <button class="primary-button" id="resumePaused" type="button">Resume this drill</button>
+              <button class="secondary-button" id="dismissPause" type="button">Dismiss reminder</button>
+            </div>
+          </div>
+
           <div class="hero-row">
             <div>
               <h1>Good <span id="timeGreeting">morning</span>.</h1>
@@ -208,7 +148,7 @@
                   <p class="privacy-line" id="referenceCaption">Device speech voice reads this exact line in U.S. English; voice availability and quality vary by browser.</p>
                 </div>
               </div>
-              <div id="ramonaReference" class="ramona-reference" hidden><label>Optional character inspiration clip <select id="ramonaClipSelect" class="full-select"><option value="68OueL-Iv2o">Scott Pilgrim Takes Off · Netflix clip</option><option value="7wd5KEaOtm4">Scott Pilgrim vs. the World · Universal trailer</option></select></label><button type="button" class="secondary-button" id="playRamonaReference">Play character clip</button><p class="privacy-line" id="ramonaClipStatus">Official clip is separate from the exact course prompt.</p><iframe title="Official Scott Pilgrim clip featuring Ramona Flowers" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><small>Official studio clips play from YouTube; this is inspiration only, not a recording of the displayed course line.</small></div>
+              <div id="ramonaReference" class="ramona-reference" hidden><label>Optional character inspiration clip <select id="ramonaClipSelect" class="full-select"><option value="68OueL-Iv2o">Scott Pilgrim Takes Off · Netflix clip</option><option value="7wd5KEaOtm4">Scott Pilgrim vs. the World · Universal trailer</option></select></label><button type="button" class="secondary-button" id="playRamonaReference">Play character clip</button><p class="privacy-line" id="ramonaClipStatus">Official clip is separate from the exact course prompt.</p><iframe title="Official Scott Pilgrim clip featuring Ramona Flowers" loading="lazy" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><small>Official studio clips play from YouTube; this is inspiration only, not a recording of the displayed course line.</small></div>
 
               <div class="visualizer" id="visualizer">
                 <canvas id="waveCanvas" width="900" height="180"></canvas>
@@ -224,6 +164,7 @@
               </div>
 
               <button class="record-button" id="recordButton"><span class="record-dot"></span><b>Start recording</b><small>SPACE</small></button>
+              <p id="micStatus" class="analysis-status form-error" role="alert"></p>
               <p class="privacy-line">Audio stays on this device. Saved recordings are optional.</p>
             </article>
 
@@ -241,6 +182,8 @@
             <article class="score-card">
               <div class="score-orbit"><strong id="overallScore">—</strong><small>overall</small></div>
               <h2 id="scoreHeadline">Building your voice map</h2>
+              <p id="baselineNote" class="baseline-note"></p>
+              <p id="comfortNotice" class="comfort-notice" role="status" aria-live="polite"></p>
               <p id="scoreFeedback"></p>
               <div class="adjustment-list" id="coachAdjustments"></div>
               <audio id="recordingPlayback" controls></audio>
@@ -250,13 +193,24 @@
                 <label>Sounds like me <output id="alignmentOutput">3 / 5</output><input id="alignmentRating" type="range" min="1" max="5" value="3" /></label>
                 <label class="listener-review">Outside perception <select id="listenerReview" class="full-select"><option value="">Not tested</option><option value="mixed">Mixed or uncertain feedback</option><option value="consistent">3+ unfamiliar listeners consistently read it as female in spontaneous conversation</option></select></label>
                 <p class="score-evidence" id="scoreEvidence"></p>
+                <button class="secondary-button full baseline-action" id="baselineButton" type="button" aria-pressed="false">Use this take as my baseline</button>
+              </div>
+              <div id="restPanel" class="rest-panel" hidden>
+                <span class="kicker">REST</span>
+                <h3 id="restHeading" tabindex="-1">Let’s pause here</h3>
+                <p id="restMessage"></p>
+                <div class="rest-actions">
+                  <button class="primary-button" id="restNow" type="button">Rest for now</button>
+                  <button class="secondary-button" id="easyReset" type="button">Try an easy reset</button>
+                  <button class="secondary-button" id="continueAnyway" type="button">Continue anyway</button>
+                </div>
               </div>
               <div class="result-actions">
                 <button class="secondary-button" id="retryButton">Try again</button>
                 <button class="primary-button" id="saveContinueButton">Save &amp; continue</button>
               </div>
               <button class="secondary-button cloud-analysis" id="cloudAnalyzeButton" hidden>Analyze words with Workers AI</button>
-              <p class="cloud-analysis-note" id="cloudAnalysisNote" hidden>This uploads this recording to Cloudflare Workers AI for transcription. The app does not retain the audio. Word locations use timestamps returned by Cloudflare; word boundaries are approximate.</p>
+              <p class="cloud-analysis-note" id="cloudAnalysisNote" hidden>This uploads this recording to Cloudflare Workers AI for transcription. The app does not retain the audio. Word locations use per-word timestamps when Cloudflare returns them.</p>
               <p class="analysis-status" id="wordAnalysisStatus" role="status" aria-live="polite"></p>
             </article>
             <article class="breakdown-card">
@@ -271,7 +225,8 @@
         <section class="view" id="driveView">
           <div class="eyebrow" id="driveDate">TODAY</div>
           <h1 id="driveTitle">Ease on the road</h1>
-          <div class="drive-duration" id="driveDurations" role="group" aria-label="List length"></div>
+          <p class="kicker" id="driveLengthLabel">PLANNED LENGTH</p>
+          <div class="drive-duration" id="driveDurations" role="group" aria-labelledby="driveLengthLabel"></div>
           <div class="drive-stack">
             <article class="settings-card">
               <span class="kicker">CUE</span>
@@ -328,7 +283,7 @@
             <canvas id="progressCanvas" width="1000" height="320"></canvas>
             <div class="empty-chart" id="emptyChart">Complete and save a practice attempt to begin your trend.</div>
           </article>
-          <article class="history-card"><div class="section-heading compact"><div><span class="kicker">HISTORY</span><h2>Recent practice</h2></div><button class="text-button danger" id="clearHistory">Clear history</button></div><div id="historyList"></div></article>
+          <article class="history-card"><div class="section-heading compact"><div><span class="kicker">HISTORY</span><h2>Recent practice</h2></div><button class="text-button danger" id="clearHistory">Clear history</button></div><audio id="historyPlayback" controls hidden></audio><p id="historyAudioStatus" class="analysis-status" role="status"></p><div id="historyList"></div></article>
         </section>
 
         <section class="view" id="settingsView">

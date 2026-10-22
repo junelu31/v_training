@@ -14,8 +14,8 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     const db = await mf.getD1Database('DB');
     const schema = await readFile('migrations/0001_initial.sql', 'utf8');
     await db.batch(schema.split(';').map(x => x.trim()).filter(Boolean).map(sql => db.prepare(sql)));
-    const call = (path, method = 'GET', data, cookie, origin = 'https://lilt.test') => mf.dispatchFetch(`https://lilt.test${path}`, {
-      method, headers: { Origin: origin, 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+    const call = (path, method = 'GET', data, cookie, origin = 'https://lilt.test', ip = '203.0.113.10') => mf.dispatchFetch(`https://lilt.test${path}`, {
+      method, headers: { Origin: origin, 'Content-Type': 'application/json', 'CF-Connecting-IP': ip, ...(cookie ? { Cookie: cookie } : {}) },
       ...(data === undefined ? {} : { body: JSON.stringify(data) })
     });
     assert.equal((await call('/api/state')).status, 401);
@@ -31,11 +31,16 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: null, version: 0 });
     const state = { goal: 'balanced', attempts: [], completed: [], saveAudio: false, rate: 0.88, voice: '', sessionStarted: null };
     assert.equal((await call('/api/state', 'PUT', { state, version: 0 }, first)).status, 200);
-    assert.equal((await call('/api/state', 'PUT', { state, version: 0 }, first)).status, 409);
+    const firstConflict = await call('/api/state', 'PUT', { state, version: 0 }, first);
+    assert.equal(firstConflict.status, 409);
+    assert.equal((await firstConflict.json()).version, 1);
     const changed = { ...state, goal: 'bright', completed: [{ lesson: 'test', activity: 'w1d1-1', date: '2026-10-04' }], attempts: [{ id: 'test-attempt', date: '2026-10-04T12:00:00Z', lessonTitle: 'Practice', overall: 70, scores: { pitch: 70, brightness: 60, movement: 80, ease: 90 } }] };
     assert.equal((await call('/api/state', 'PUT', { state: changed, version: 1 }, first)).status, 200);
-    assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: { ...changed, driveLog: [] }, version: 2 });
-    assert.equal((await call('/api/state', 'PUT', { state, version: 1 }, first)).status, 409);
+    const withDefaults = value => ({ baselineAttemptId: null, pausedSession: null, driveLog: [], ...value });
+    assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: withDefaults(changed), version: 2 });
+    const secondConflict = await call('/api/state', 'PUT', { state, version: 1 }, first);
+    assert.equal(secondConflict.status, 409);
+    assert.equal((await secondConflict.json()).version, 2);
     assert.equal((await call('/api/state', 'PUT', { state: { ...state, attempts: [{}] }, version: 2 }, first)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...state, voice: '<script>' }, version: 2 }, first)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { padding: 'x'.repeat(1024 * 1024) }, first)).status, 413);
@@ -46,7 +51,7 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     const login = await call('/api/auth/login', 'POST', credentials);
     assert.equal(login.status, 200);
     const signedIn = login.headers.get('Set-Cookie').split(';')[0];
-    assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state, { ...changed, driveLog: [] });
+    assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state, withDefaults(changed));
     const ramonaState = { ...changed, goal: 'ramona' };
     assert.equal((await call('/api/state', 'PUT', { state: ramonaState, version: 2 }, signedIn)).status, 200);
     assert.equal((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.goal, 'ramona');
@@ -57,6 +62,27 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: [{ ...driveEntry, actualMinutes: 15 }] }, version: 4 }, signedIn)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: [{ ...driveEntry, cueHeld: 'maybe' }] }, version: 4 }, signedIn)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...driveState, driveLog: Array.from({ length: 501 }, (_, index) => ({ ...driveEntry, id: `drive-${index}` })) }, version: 4 }, signedIn)).status, 400);
+    const legacy = await (await call('/api/state', 'GET', undefined, signedIn)).json();
+    assert.equal(legacy.version, 4);
+    assert.equal(legacy.state.baselineAttemptId, null);
+    assert.equal(legacy.state.pausedSession, null);
+    const pause = { lesson: 'baseline', activity: 'w1d1-2', date: '2026-10-05T12:00:00.000Z', comfort: 1, lessonTitle: 'Natural voice snapshot' };
+    const enriched = { ...driveState, baselineAttemptId: 'test-attempt', pausedSession: pause };
+    assert.equal((await call('/api/state', 'PUT', { state: enriched, version: 4 }, signedIn)).status, 200);
+    const roundTrip = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state;
+    assert.equal(roundTrip.baselineAttemptId, 'test-attempt');
+    assert.deepEqual(roundTrip.pausedSession, pause);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, pausedSession: { ...pause, comfort: 0 } }, version: 5 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, baselineAttemptId: 'x'.repeat(81) }, version: 5 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, pausedSession: { ...pause, lesson: '<bad>' } }, version: 5 }, signedIn)).status, 400);
+    const analyze = (headers, body) => mf.dispatchFetch('https://lilt.test/api/analyze', {
+      method: 'POST', headers: { Origin: 'https://lilt.test', Cookie: signedIn, 'CF-Connecting-IP': '203.0.113.10', ...headers }, body
+    });
+    assert.equal((await analyze({ 'Content-Type': 'text/plain' }, 'nope')).status, 415);
+    assert.equal((await analyze({ 'Content-Type': 'audio/webm' }, new Uint8Array([1, 2, 3, 4]))).status, 400);
+    assert.equal((await analyze({ 'Content-Type': 'audio/webm', 'X-Practice-Prompt': btoa('Hello there') }, new Uint8Array())).status, 400);
+    assert.equal((await analyze({ 'Content-Type': 'audio/webm', 'X-Practice-Prompt': btoa('Hello there') }, new Uint8Array([1, 2, 3, 4]))).status, 503);
+    assert.equal((await db.prepare("SELECT key FROM auth_limits WHERE key LIKE 'analysis:%'").all()).results.length, 0);
     assert.equal((await call('/api/auth/logout', 'POST', {}, signedIn)).status, 200);
     assert.equal((await call('/api/state', 'GET', undefined, signedIn)).status, 401);
     const hash = signedIn.split('=')[1];
@@ -65,7 +91,19 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     const stored = await db.prepare('SELECT password_hash FROM users WHERE email = ?').bind(credentials.email).first();
     assert.notEqual(stored.password_hash, credentials.password);
     assert.notEqual(stored.password_hash, hash);
-    for (let i = 0; i < 21; i++) await call('/api/auth/login', 'POST', credentials);
-    assert.equal((await call('/api/auth/login', 'POST', credentials)).status, 429);
+    for (let i = 0; i < 3; i++) assert.equal((await call('/api/auth/login', 'POST', credentials)).status, 200);
+    const attacker = '203.0.113.20';
+    for (let i = 0; i < 10; i++) assert.equal((await call('/api/auth/login', 'POST', { ...credentials, password: 'wrong-long-password' }, null, 'https://lilt.test', attacker)).status, 401);
+    assert.equal((await call('/api/auth/login', 'POST', credentials, null, 'https://lilt.test', attacker)).status, 429);
+    assert.equal((await call('/api/auth/login', 'POST', credentials, null, 'https://lilt.test', '203.0.113.21')).status, 200);
+    const resetting = '203.0.113.30';
+    for (let i = 0; i < 9; i++) assert.equal((await call('/api/auth/login', 'POST', { ...credentials, password: 'wrong-long-password' }, null, 'https://lilt.test', resetting)).status, 401);
+    assert.equal((await call('/api/auth/login', 'POST', credentials, null, 'https://lilt.test', resetting)).status, 200);
+    assert.equal((await call('/api/auth/login', 'POST', { ...credentials, password: 'wrong-long-password' }, null, 'https://lilt.test', resetting)).status, 401);
+    const digestHex = async value => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const blockedIp = '198.51.100.40';
+    await db.prepare('INSERT INTO auth_limits (key, count, expires_at) VALUES (?, 50, ?)').bind(`ipfail:${await digestHex(blockedIp)}`, Date.now() + 600000).run();
+    assert.equal((await call('/api/auth/login', 'POST', credentials, null, 'https://lilt.test', blockedIp)).status, 429);
+    assert.equal((await db.prepare("SELECT key FROM auth_limits WHERE key LIKE 'email:%'").all()).results.length, 0);
   } finally { await mf.dispose(); }
 });
