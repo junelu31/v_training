@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f1ea" />
     <meta name="description" content="Lilt — gender-affirming voice practice with private accounts and synced progress." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Lilt" />
     <title>Lilt — voice practice, made visible</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
       </head>
   <body>
@@ -228,6 +234,8 @@
           <p class="kicker" id="driveLengthLabel">PLANNED LENGTH</p>
           <div class="drive-duration" id="driveDurations" role="group" aria-labelledby="driveLengthLabel"></div>
           <div class="drive-stack">
+            <button class="primary-button coach-start" id="startCoach" type="button">Start Drive coach</button>
+            <p class="coach-note">Hands-free. After you start, talk through the lines. Say next, repeat, pause, stop, or how am I doing. On an iPhone, add Lilt to your Home Screen. The microphone stops if the screen locks or you leave the app; one tap continues. A call, Siri, CarPlay, or a Bluetooth change pauses and resumes when audio returns.</p>
             <article class="settings-card">
               <span class="kicker">CUE</span>
               <h2 id="driveCue"></h2>
@@ -307,6 +315,14 @@
       </div>
     </div>
 
+    <div id="coachOverlay" class="coach-overlay" hidden>
+      <p class="coach-kicker" id="coachKicker">DRIVE COACH</p>
+      <h1 id="coachLine">Listening.</h1>
+      <p id="coachSub" class="coach-sub"></p>
+      <p id="coachGuide" class="coach-guide">The screen stays on while this is open. If the iPhone locks or you switch apps, iOS stops the microphone. Come back and tap once. Lilt cannot keep listening in the background.</p>
+      <button class="primary-button coach-resume" id="coachResume" type="button" hidden>Tap to continue</button>
+      <p id="coachTestRow" hidden><label>Test audio<input id="coachFile" type="file" accept="audio/*,video/*" /></label></p>
+    </div>
     <script src="course.js"></script>
     <script type="module" src="app.js"></script>
   </body>

@@ -1,7 +1,7 @@
 import { mkdir, copyFile, cp } from 'node:fs/promises';
 import { build } from 'esbuild';
 await mkdir('dist/chunks', { recursive: true });
-for (const file of ['index.html', 'styles.css', 'course.js', 'public/favicon.svg', 'public/404.html', 'public/_headers']) {
+for (const file of ['index.html', 'styles.css', 'course.js', 'public/favicon.svg', 'public/404.html', 'public/_headers', 'public/manifest.webmanifest']) {
   const name = file.startsWith('public/') ? file.slice('public/'.length) : file;
   await copyFile(file, `dist/${name}`);
 }

@@ -1,0 +1,10 @@
+{
+  "name": "Lilt",
+  "short_name": "Lilt",
+  "description": "Gender-affirming voice practice, including a hands-free Drive coach.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f1ea",
+  "theme_color": "#1c1915",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

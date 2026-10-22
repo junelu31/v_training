@@ -132,6 +132,45 @@ function validatePausedSession(value) {
   return { lesson: value.lesson, activity, date: value.date, comfort: value.comfort, lessonTitle: value.lessonTitle || '' };
 }
 
+const COACH_FLAGS = ['drop', 'chesty', 'heavy', 'fry', 'strain', 'dark'];
+
+function validateCoach(entry) {
+  const coach = entry.coach;
+  if (!coach || typeof coach !== 'object' || Array.isArray(coach)) throw new HttpError(400, 'Invalid drive log.');
+  if (!Number.isFinite(coach.minutes) || coach.minutes < 0 || coach.minutes > 120) throw new HttpError(400, 'Invalid drive log.');
+  if (!['lines', 'free'].includes(coach.mode)) throw new HttpError(400, 'Invalid drive log.');
+  if (typeof coach.comfortKnown !== 'boolean' || typeof coach.comfortPaused !== 'boolean' || typeof coach.restSuggested !== 'boolean') throw new HttpError(400, 'Invalid drive log.');
+  if (typeof coach.summary !== 'string' || coach.summary.length > 240) throw new HttpError(400, 'Invalid drive log.');
+  if (!Array.isArray(coach.phrases) || coach.phrases.length > 30) throw new HttpError(400, 'Invalid drive log.');
+  const phrases = coach.phrases.map(phrase => {
+    if (!phrase || typeof phrase.prompt !== 'string' || typeof phrase.transcript !== 'string' || typeof phrase.feedback !== 'string') throw new HttpError(400, 'Invalid drive log.');
+    if (phrase.prompt.length > 180 || phrase.transcript.length > 180 || phrase.feedback.length > 240) throw new HttpError(400, 'Invalid drive log.');
+    if (!['masculine', 'androgynous', 'feminine'].includes(phrase.profile) || typeof phrase.tooNoisy !== 'boolean') throw new HttpError(400, 'Invalid drive log.');
+    if (!Array.isArray(phrase.words) || phrase.words.length > 16) throw new HttpError(400, 'Invalid drive log.');
+    return {
+      prompt: phrase.prompt,
+      transcript: phrase.transcript,
+      feedback: phrase.feedback,
+      profile: phrase.profile,
+      tooNoisy: phrase.tooNoisy,
+      words: phrase.words.map(word => {
+        if (!word || typeof word.text !== 'string' || word.text.length > 32 || !Array.isArray(word.flags) || word.flags.length > 4) throw new HttpError(400, 'Invalid drive log.');
+        if (word.flags.some(flag => !COACH_FLAGS.includes(flag))) throw new HttpError(400, 'Invalid drive log.');
+        return { text: word.text, flags: word.flags };
+      })
+    };
+  });
+  return {
+    minutes: coach.minutes,
+    mode: coach.mode,
+    comfortKnown: coach.comfortKnown,
+    comfortPaused: coach.comfortPaused,
+    restSuggested: coach.restSuggested,
+    summary: coach.summary,
+    phrases
+  };
+}
+
 function validateDriveLog(driveLog) {
   if (driveLog == null) return [];
   if (!Array.isArray(driveLog) || driveLog.length > 500) throw new HttpError(400, 'Invalid drive log.');
@@ -140,10 +179,17 @@ function validateDriveLog(driveLog) {
         typeof entry.date !== 'string' || !Number.isFinite(Date.parse(entry.date)) ||
         typeof entry.routineId !== 'string' || entry.routineId.length > 40 ||
         ![20, 30, 40].includes(entry.plannedMinutes) ||
-        ![0, 20, 30, 40].includes(entry.actualMinutes) ||
         !Number.isInteger(entry.comfort) || entry.comfort < 1 || entry.comfort > 5 ||
         !['yes', 'partly', 'no'].includes(entry.cueHeld)) throw new HttpError(400, 'Invalid drive log.');
-    return { id: entry.id, date: entry.date, routineId: entry.routineId, plannedMinutes: entry.plannedMinutes, actualMinutes: entry.actualMinutes, comfort: entry.comfort, cueHeld: entry.cueHeld };
+    if (entry.kind == null) {
+      if (![0, 20, 30, 40].includes(entry.actualMinutes)) throw new HttpError(400, 'Invalid drive log.');
+      return { id: entry.id, date: entry.date, routineId: entry.routineId, plannedMinutes: entry.plannedMinutes, actualMinutes: entry.actualMinutes, comfort: entry.comfort, cueHeld: entry.cueHeld };
+    }
+    if (entry.kind !== 'coach' || !Number.isInteger(entry.actualMinutes) || entry.actualMinutes < 0 || entry.actualMinutes > 120) throw new HttpError(400, 'Invalid drive log.');
+    return {
+      id: entry.id, date: entry.date, routineId: entry.routineId, plannedMinutes: entry.plannedMinutes,
+      actualMinutes: entry.actualMinutes, comfort: entry.comfort, cueHeld: entry.cueHeld, kind: 'coach', coach: validateCoach(entry)
+    };
   });
 }
 
@@ -246,6 +292,7 @@ async function api(request, env) {
     const row = await db.prepare('SELECT data, version FROM user_state WHERE user_id = ?').bind(user.id).first();
     return json({ state: row ? JSON.parse(row.data) : null, version: row?.version ?? 0 });
   }
+  if (path === '/api/drive/turn' && method === 'POST') return driveTurn(request, env, db, user);
   if (path === '/api/state' && method === 'PUT') {
     const input = await body(request);
     const state = validateState(input?.state);
@@ -260,6 +307,111 @@ async function api(request, env) {
     return json({ version: input.version + 1 });
   }
   return json({ error: 'Not found.' }, 404);
+}
+
+const DRIVE_QUESTIONS = {
+  feminine: { type: 'noul', instructions: 'Does this short phrase read as feminine or woman-like?' },
+  masculine: { type: 'noul', instructions: 'Does this short phrase read as masculine or man-like?' },
+  chesty: { type: 'noul', instructions: 'Does a word sound chesty, dark, or backed in the throat?' },
+  heavy: { type: 'noul', instructions: 'Does a word sound heavy, buzzy, or thick in the chest?' },
+  strained: { type: 'noul', instructions: 'Does the voice sound strained, pressed, or pushed?' },
+  fry: { type: 'noul', instructions: 'Is there vocal fry or a creak, especially near the end?' },
+  drop: { type: 'noul', instructions: 'Does the pitch fall at the end of a word or the phrase?' }
+};
+
+function readNoul(value) {
+  if (typeof value === 'number') return value;
+  const noul = value?.noul ?? value?.probability;
+  return Number.isFinite(Number(noul)) ? Number(noul) : null;
+}
+
+function wordsFromTranscript(output) {
+  const alternatives = output?.results?.channels?.[0]?.alternatives?.[0];
+  const raw = alternatives?.words || output?.words || [];
+  const words = (Array.isArray(raw) ? raw : []).map(word => ({
+    text: String(word.word || word.punctuated_word || ''),
+    start: Number(word.start),
+    end: Number(word.end)
+  })).filter(word => word.text && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start);
+  if (words.length) return { text: String(alternatives?.transcript || words.map(word => word.text).join(' ')).trim(), words };
+  const segments = Array.isArray(output?.segments) ? output.segments : [];
+  const segmented = segments.flatMap(segment => Array.isArray(segment.words) ? segment.words : []).map(word => ({
+    text: String(word.word || ''),
+    start: Number(word.start),
+    end: Number(word.end)
+  })).filter(word => word.text && Number.isFinite(word.start) && word.end > word.start);
+  const text = String(output?.text || output?.transcription_info?.text || alternatives?.transcript || '').trim();
+  return { text, words: segmented };
+}
+
+async function speakLine(env, say) {
+  try {
+    const response = await env.AI.run('@cf/deepgram/aura-2-en', { text: say, speaker: 'luna', encoding: 'mp3' }, { returnRawResponse: true });
+    const bytes = response?.arrayBuffer ? new Uint8Array(await response.arrayBuffer()) : new Uint8Array(response);
+    if (!bytes?.length) return null;
+    return { model: '@cf/deepgram/aura-2-en', audioBase64: toBase64(bytes), mime: 'audio/mpeg' };
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'aura-2 failed', error: error instanceof Error ? error.message : String(error) }));
+    return null;
+  }
+}
+
+async function driveTurn(request, env, db, user) {
+  const input = await body(request);
+  const audio = typeof input?.audioBase64 === 'string' ? input.audioBase64 : '';
+  const say = typeof input?.say === 'string' ? input.say.replace(/[<>]/g, '').slice(0, 280) : '';
+  if ((!audio && !say) || audio.length > 900000) throw new HttpError(400, 'Send a short WAV phrase.');
+  if (!env.AI) throw new HttpError(503, 'Drive coach cloud models are not configured. On-device coaching still runs.');
+  await limit(db, `drive:${user.id}`, 160);
+  const started = Date.now();
+  if (!audio) {
+    const speech = await speakLine(env, say);
+    return json({ transcript: '', words: [], sttModel: null, ear: null, earModel: null, speech, latencyMs: Date.now() - started });
+  }
+  const audioUrl = audio.startsWith('data:') ? audio : `data:audio/wav;base64,${audio}`;
+  const transcribe = (async () => {
+    try {
+      const nova = await env.AI.run('@cf/deepgram/nova-3', { audio: audioUrl, punctuate: true, smart_format: false });
+      const parsed = wordsFromTranscript(nova);
+      if (parsed.text) return { ...parsed, model: '@cf/deepgram/nova-3' };
+    } catch (error) {
+      console.error(JSON.stringify({ message: 'nova-3 failed', error: error instanceof Error ? error.message : String(error) }));
+    }
+    try {
+      const whisper = await env.AI.run('@cf/openai/whisper-large-v3-turbo', { audio, task: 'transcribe', language: 'en', vad_filter: true });
+      const parsed = wordsFromTranscript(whisper);
+      return { ...parsed, model: '@cf/openai/whisper-large-v3-turbo' };
+    } catch (error) {
+      console.error(JSON.stringify({ message: 'whisper fallback failed', error: error instanceof Error ? error.message : String(error) }));
+      return { text: '', words: [], model: null };
+    }
+  })();
+  const ear = (async () => {
+    try {
+      const output = await env.AI.run('@cf/cloudflare/clef-omni', { model: 'clef-omni', state: {}, audio: [audioUrl], questions: DRIVE_QUESTIONS });
+      const answers = output?.answers || {};
+      return {
+        model: '@cf/cloudflare/clef-omni',
+        answers: Object.fromEntries(Object.keys(DRIVE_QUESTIONS).map(key => [key, readNoul(answers[key])])),
+        usage: output?.usage || null
+      };
+    } catch (error) {
+      console.error(JSON.stringify({ message: 'clef-omni failed', error: error instanceof Error ? error.message : String(error) }));
+      return { model: null, answers: null, usage: null };
+    }
+  })();
+  const speech = say ? speakLine(env, say) : Promise.resolve(null);
+  const [transcript, heard, spoken] = await Promise.all([transcribe, ear, speech]);
+  return json({
+    transcript: transcript.text || '',
+    words: transcript.words || [],
+    sttModel: transcript.model,
+    ear: heard.answers,
+    earModel: heard.model,
+    usage: heard.usage,
+    speech: spoken,
+    latencyMs: Date.now() - started
+  });
 }
 
 export default {

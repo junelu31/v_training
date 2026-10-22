@@ -69,6 +69,46 @@ The curriculum follows the multidimensional approach described by the American S
 
 Every commit on this computer pushes the current branch to GitHub and deploys the Cloudflare Worker. The hook is `.githooks/post-commit`, enabled with `git config core.hooksPath .githooks`.
 
+## Drive coach
+
+Drive coach is the hands-free practice loop. One **Start Drive coach** button opens a full-screen page. The browser keeps a single `AudioContext`, a fixed-length utterance buffer, and a pre-roll ring. When she pauses, the page posts that utterance to `POST /api/drive/turn`. The Worker runs Workers AI speech-to-text (`@cf/deepgram/nova-3`, Whisper large v3 turbo as fallback), an optional `@cf/cloudflare/clef-omni` ear check, and `@cf/deepgram/aura-2-en` speech (speaker `luna`) in parallel. Pitch, formants, vocal-tract length, spectral tilt, and fry are measured in the browser. The spoken line is one or two sentences from `drive-cues.js`, and only a word whose measured confidence is at least 0.62 is named. The gender-leaning read (feminine / androgynous / masculine) is stored on the phrase and is not spoken.
+
+This does not use `@cloudflare/voice` `withVoice`. That loop only hands the page a transcript, so it cannot score her audio or keep the coach's own voice out of the take. There is no Durable Object. A coach check-in is a drive-log row with `kind: "coach"`, so older drive logs stay valid. Sessions under about 20 seconds are not written. The in-memory phrase list is capped, and a checkpoint is persisted every few phrases.
+
+On an iPhone, add Lilt to the Home Screen and leave the Drive coach screen up. A screen Wake Lock is requested, and the audio context resumes after a call, Siri, CarPlay, or a Bluetooth route change when the browser allows it. If the screen locks or the app is backgrounded, iOS stops the microphone. The page then shows **Tap to continue** instead of coaching silence. Saves that fail offline stay queued and flush when the network returns.
+
+Do not deploy from this branch unless June asks. `npm run deploy` publishes the Worker.
+
+### Re-running the Drive coach checks
+
+`npm test` runs the harnesses that do not need June's recording. It passes `--expose-gc`, which the soak uses.
+
+| Check | Command | What it prints or asserts |
+| --- | --- | --- |
+| Cue library, confidence gate, synthetic issue precision/recall, commands, praise | `node --test tests/drive-coach.test.mjs` | Physical cues stay one sentence, rotate, and contain no HTML. Clean words are not flagged. A labeled phrase must catch strain, a pitch drop, chest or weight, and fry. |
+| Generated road noise | same file | Twelve seconds of synthetic road noise opens no turn. A phrase mixed at 5 dB does not invent a spoken issue when the take is too noisy. |
+| 40-minute memory soak | `node --expose-gc --test tests/coach-soak.test.mjs` | Loops speech plus noise for 40 simulated minutes. Logs heap at the start, 20 minutes, and 40 minutes. The second 20 minutes must grow by less than 8 MB, and the phrase log stays capped. |
+| Coach progress shape | `node --test tests/worker.test.mjs` | A `kind: "coach"` row round-trips. Markup inside feedback is rejected. |
+
+Masculine/feminine profiling uses OpenSLR LibriSpeech train-clean-100 (CC BY 4.0), streamed from the Hugging Face mirror `openslr/librispeech_asr`. Audio is written under `/tmp/lilt-profile` and must not be committed.
+
+```bash
+python3 scripts/fetch-profile-audio.py
+node scripts/profile-eval.mjs
+```
+
+The fetch needs `datasets`, `soundfile`, and NumPy 2. It saves about 55 feminine and 55 masculine speakers, one clip each, at 16 kHz float32. The eval keeps 50 of each label, including the lowest and highest pitches of that label, scores the acoustic read clean and remixed with synthetic road noise at 10 dB, and compares it with a pitch-only read. Results go to the terminal and to `/tmp/lilt-profile/report.json`. Clef-omni is blended in the product only when its probability is at least 0.62; this offline table is the acoustic read. LibriSpeech is read-aloud English, so accent variety is limited.
+
+June's latte recording and the road-noise mixes are not in the repository. If you already have the 16 kHz mono float32 files locally, point the harness at that directory:
+
+```bash
+DRIVE_AUDIO_DIR=/tmp/lilt-audio node scripts/road-noise-eval.mjs
+```
+
+Expected names, if you have them: `take1_20261021_2334_1fad.f32`, `take1_road_snr20_bcde.f32`, `take1_road_snr10_c5d9.f32`, `take1_road_snr5_19f3.f32`, `road_only_46cf.f32`. The script prints turns, the tracker SNR, whether the take was called too noisy, the spoken line, and the confident flags. If the directory is missing it exits without downloading anything.
+
+A local browser pass can feed a file instead of the microphone: `npm run db:local && npm run dev`, sign in, and open `http://localhost:8787/?coachTest=1`.
+
 ## Drive practice
 
 Drive practice is a 20-, 30-, or 40-minute speaking list. Today’s routine matches the current course week. After all 40 sessions are complete, the maintenance routine is used. Choosing a planned length also sets the check-in minutes, which you can still change before saving. An optional check-in logs minutes, comfort, and whether the cue held. That log counts toward the weekly minute ring, the streak, and Progress practice time. It does not complete a course activity.
