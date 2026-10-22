@@ -289,6 +289,67 @@ test('a fry or drop the segmenter already marked is kept when readTurn is empty'
   }
 });
 
+test('pitch, drop, and fry are spoken as a physical action', async (t) => {
+  const coach = await coachParts();
+  if (!coach.ok) {
+    t.skip(coach.reason);
+    return;
+  }
+  const fry = concat([
+    vowel({ f0: 205, f1: 380, f2: 2050, duration: 0.95, seed: 84 }),
+    vowel({ f0: 92, f1: 400, f2: 1900, fry: true, jitter: 0.035, duration: 0.42, seed: 83 })
+  ]);
+  const cases = [
+    [vowel({ f0: 108, f1: 400, f2: 2000, duration: 1.3, seed: 94 }), 'Hum, and bring the pitch up a little.'],
+    [vowel({ f0: 205, f0End: 96, f1: 380, f2: 2000, duration: 1.4, seed: 87 }), 'Lift the end of the word with a small hum.'],
+    [fry, 'Keep breath flowing through the last word, and lift the pitch a little so the end does not creak.']
+  ];
+  for (const [samples, line] of cases) {
+    const run = await runClip(coach.factory, { id: line.slice(0, 12), sampleRate: SAMPLE_RATE, samples });
+    assert.deepEqual(run.lines, [line]);
+  }
+});
+
+function fadeOut(samples, seconds) {
+  const out = new Float32Array(samples);
+  const n = Math.min(out.length, Math.floor(SAMPLE_RATE * seconds));
+  const start = out.length - n;
+  for (let i = 0; i < n; i++) out[start + i] *= (1 - i / n) ** 2;
+  return out;
+}
+
+function padSilence(samples, seconds) {
+  const out = new Float32Array(samples.length + Math.floor(SAMPLE_RATE * seconds));
+  out.set(samples);
+  return out;
+}
+
+test('a fading breathy phrase is still coached, clean and at 20 dB', async (t) => {
+  const coach = await coachParts();
+  if (!coach.ok) {
+    t.skip(coach.reason);
+    return;
+  }
+  const breath = vowel({ f0: 195, f1: 380, f2: 2050, breath: 0.28, duration: 1.25, seed: 55 });
+  const faded = fadeOut(breath, 0.35);
+  const noise = roadNoise(faded.length + SAMPLE_RATE, SAMPLE_RATE, 90, 'moderate');
+  const cases = [
+    ['clean fade', faded],
+    ['clean fade plus the pause that closes a turn', padSilence(fadeOut(breath, 0.3), 0.56)],
+    ['20 dB fade', mixAtSnr(faded, noise, 20)],
+    ['20 dB steady', mixAtSnr(breath, noise, 20)]
+  ];
+  const misses = [];
+  for (const [label, samples] of cases) {
+    const run = await runClip(coach.factory, { id: label, sampleRate: SAMPLE_RATE, samples });
+    const heard = run.lines.join(' | ') || '(silence)';
+    const ids = run.lines.flatMap(line => cuesMatching(line));
+    if (!ids.includes('breathiness')) misses.push(`${label} heard ${heard}`);
+    if (ids.includes('vocal-fry') || ids.includes('pitch-drop-end')) misses.push(`${label} wrong cue ${heard}`);
+  }
+  assert.deepEqual(misses, []);
+});
+
 test('a breathy vowel in moderate road noise is not called a drop or fry', async (t) => {
   const coach = await coachParts();
   if (!coach.ok) {
