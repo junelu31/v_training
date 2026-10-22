@@ -1,13 +1,27 @@
 import { median } from './drive-dsp.js';
 import { cueLine, fillWord, problemPhrase, ISSUE_ORDER } from './drive-cues.js';
 import { shouldPauseForComfort } from './client-logic.js';
+import { createDriveSession } from './drive-session.js';
+
+export { createDriveSession };
 
 export const CONFIDENCE_GATE = 0.62;
 const MEMORY_PHRASES = 24;
 const SAVED_PHRASES = 30;
 const SAVED_WORDS = 16;
 
-const PROFILE_LABELS = ['masculine', 'androgynous', 'feminine'];
+const PROFILE_LABELS = ['masculine', 'androgynous', 'feminine', 'unsure'];
+// Fit on the calibration half of train-clean-100 only (see scripts/profile-split.mjs).
+// Median F2 on voiced vowels, with the part predicted by F0 removed.
+// On that split, F3 and spectral tilt added nothing once F0 was accounted for.
+// |residual| p90 is 233 Hz, so smaller gaps stay with pitch.
+// A confident pitch read is flipped only past 320 Hz, above the p95 (267 Hz).
+// A lower floor scored higher on the calibration speakers and was rejected:
+// on the held-out speakers it added opposite-gender mistakes.
+const F2_FROM_F0 = { intercept: 1380, slope: 0.465 };
+const RESIDUAL_FLOOR = 230;
+const RESIDUAL_OVERRIDE = 320;
+const PROFILE_SURE = 0.62;
 
 function clamp(value, lo, hi) {
   return Math.min(hi, Math.max(lo, value));
@@ -132,6 +146,7 @@ function wordStats(frames, word) {
     hz: pick('hz'),
     f1: pick('f1'),
     f2: pick('f2'),
+    f2Local: pick('f2Local'),
     f3: pick('f3'),
     vtl: pick('vtl'),
     tilt: pick('tilt'),
@@ -143,7 +158,10 @@ function wordStats(frames, word) {
     confidence: pick('confidence'),
     fry: voiced.length ? fryFrames / voiced.length : 0,
     fryPeak,
-    unstable: slice.length ? slice.filter(frame => frame.unstable).length / slice.length : 0
+    unstable: slice.length ? slice.filter(frame => frame.unstable).length / slice.length : 0,
+    startHz: finiteMedian(voiced.slice(0, Math.max(1, Math.ceil(voiced.length * 0.35))).map(frame => frame.hz)),
+    endHz: finiteMedian(voiced.slice(Math.floor(voiced.length * 0.7)).map(frame => frame.hz)),
+    breath: voiced.length ? voiced.filter(frame => frame.h1h2 > 8 || frame.breathy).length / voiced.length : 0
   };
 }
 
@@ -166,11 +184,18 @@ export function measureWords(analysis, prompt, goal = {}, timings = null) {
   const phraseH1 = finiteMedian(measured.map(word => word.h1h2));
   const phraseResonance = finiteMedian(measured.map(word => word.resonance));
   const phraseF2 = finiteMedian(measured.map(word => word.f2));
+  const phraseVtl = finiteMedian(measured.map(word => word.vtl));
+  const phraseCentroid = finiteMedian(measured.map(word => word.centroid));
   const brightnessFloor = Array.isArray(goal.brightness) ? goal.brightness[0] : -10;
   return measured.map((word, index) => {
     const flags = [];
     const enough = word.voiced >= 1;
+    const smoothFall = Number.isFinite(word.startHz) && Number.isFinite(word.endHz)
+      && word.startHz - word.endHz >= 36 && word.startHz >= 160 && word.endHz <= 150;
     const previousVoiced = [...measured.slice(0, index)].reverse().find(item => Number.isFinite(item.hz));
+    if (enough && smoothFall) {
+      addFlag(flags, 'drop', 0.8, `pitch fell from ${Math.round(word.startHz)} Hz to ${Math.round(word.endHz)} Hz at the end of the word`);
+    }
     if (enough && Number.isFinite(word.hz) && Number.isFinite(highPitch)) {
       const fell = previousVoiced && previousVoiced.hz - word.hz >= 36;
       const ending = index === measured.length - 1 && Number.isFinite(bodyPitch) && bodyPitch - word.hz >= 16;
@@ -184,10 +209,11 @@ export function measureWords(analysis, prompt, goal = {}, timings = null) {
     } else if (enough && Number.isFinite(word.resonance) && word.resonance < -14 && Number.isFinite(phraseResonance) && word.resonance < phraseResonance - 3.5) {
       addFlag(flags, 'chesty', (phraseResonance - word.resonance) / 8, `resonance ${word.resonance.toFixed(1)} dB`);
     }
-    if (enough && Number.isFinite(word.vtl) && word.vtl > 16.4) {
-      addFlag(flags, 'dark', (word.vtl - 15.6) / 2.2, `vocal tract about ${word.vtl.toFixed(1)} cm`);
-    } else if (enough && Number.isFinite(word.centroid) && word.centroid < 700 && Number.isFinite(word.f2) && word.f2 < 1400) {
-      addFlag(flags, 'dark', (850 - word.centroid) / 280, `centroid ${Math.round(word.centroid)} Hz`);
+    // VTL is 43750/F3, about 17 cm for a typical adult, so an absolute cutoff flags the whole phrase.
+    if (enough && Number.isFinite(word.vtl) && Number.isFinite(phraseVtl) && word.vtl > phraseVtl + 1.4) {
+      addFlag(flags, 'dark', (word.vtl - phraseVtl) / 2.2, `vocal tract about ${word.vtl.toFixed(1)} cm`);
+    } else if (enough && Number.isFinite(word.centroid) && Number.isFinite(phraseCentroid) && word.centroid < phraseCentroid - 180 && Number.isFinite(word.f2) && Number.isFinite(phraseF2) && word.f2 < phraseF2 - 180) {
+      addFlag(flags, 'dark', (phraseCentroid - word.centroid) / 280, `centroid ${Math.round(word.centroid)} Hz`);
     }
     if (enough && flags.some(flag => flag.issue === 'drop') && Number.isFinite(word.tilt) && Number.isFinite(phraseTilt) && word.tilt < phraseTilt - 0.6) {
       addFlag(flags, 'heavy', 0.74, `tilt ${word.tilt.toFixed(1)} dB/octave, heavier than the phrase`);
@@ -196,8 +222,15 @@ export function measureWords(analysis, prompt, goal = {}, timings = null) {
       addFlag(flags, 'heavy', 0.7, `tilt ${word.tilt.toFixed(1)} dB/octave`);
     }
     const finalWord = index === measured.length - 1 || word.text === '-tte';
-    if (word.voiced >= 2 && Number.isFinite(word.hz) && word.hz < 160 && word.fryPeak >= 0.7 && (finalWord || word.fry >= 0.4)) {
+    if (!smoothFall && word.voiced >= 2 && Number.isFinite(word.hz) && word.hz < 160 && word.fryPeak >= 0.7 && (finalWord || word.fry >= 0.4)) {
       addFlag(flags, 'fry', Math.max(0.7, word.fry), `fry on ${Math.round(word.fry * 100)}% of voiced frames`);
+    }
+    const formant = Number.isFinite(word.f2Local) ? word.f2Local : word.f2;
+    if (enough && !smoothFall && word.voiced >= 4 && Number.isFinite(word.hz) && word.hz < 145 && Number.isFinite(formant) && formant >= 1600 && !flags.some(flag => flag.issue === 'fry' || flag.issue === 'drop')) {
+      addFlag(flags, 'low', 0.74, `pitch ${Math.round(word.hz)} Hz with F2 ${Math.round(formant)} Hz`);
+    }
+    if (enough && word.breath >= 0.5 && !flags.some(flag => flag.speak || flag.confidence >= CONFIDENCE_GATE)) {
+      addFlag(flags, 'breath', 0.7, 'breathy frames through the word');
     }
     if (word.frames >= 4 && word.voiced >= 1 && word.unstable >= (index === 0 ? 0.3 : 0.5)) {
       addFlag(flags, 'strain', Math.max(word.unstable, index === 0 ? 0.66 : word.unstable), `unstable onset on ${Math.round(word.unstable * 100)}% of frames`);
@@ -259,11 +292,7 @@ export function composeFeedback({ words = [], tooNoisy = false, previous = null,
     if (improved) {
       return { text: fillWord(IMPROVED(cursor), improved.word), issue: 'held', word: improved.word, cursor: cursor + 1, spoken: false };
     }
-    const clean = words.find(word => word.voiced >= 3 && !word.flags.some(flag => flag.speak));
-    if (clean && cursor % 3 === 2) {
-      return { text: fillWord(PRAISE(cursor), clean.text), issue: 'held', word: clean.text, cursor: cursor + 1, spoken: false };
-    }
-    return { text: cueLine('held', cursor), issue: 'held', word: '', cursor: cursor + 1, spoken: false };
+    return { text: '', issue: 'held', word: '', cursor: cursor + 1, spoken: false };
   }
   candidates.sort((a, b) => ISSUE_ORDER.indexOf(a.issues[0]) - ISSUE_ORDER.indexOf(b.issues[0]));
   const chosen = candidates[0];
@@ -272,9 +301,6 @@ export function composeFeedback({ words = [], tooNoisy = false, previous = null,
   return { text: sentence, issue: lead[0], word: chosen.word.text, cursor: cursor + 1, spoken: true };
 }
 
-function PRAISE(cursor) {
-  return ["Nice lift on '{word}'.", "'{word}' stayed easy.", "Good, '{word}' held."][Math.abs(cursor) % 3];
-}
 function IMPROVED(cursor) {
   return ["'{word}' is better than last time.", "That '{word}' improved.", "'{word}' held this time."][Math.abs(cursor) % 3];
 }
@@ -297,24 +323,51 @@ export function parseEar(answers) {
   };
 }
 
+function formantSpread(values) {
+  const finite = values.filter(Number.isFinite);
+  if (finite.length < 4) return null;
+  const mid = finiteMedian(finite);
+  return finiteMedian(finite.map(value => Math.abs(value - mid)));
+}
+
 export function profilePhrase(analysis, ear = null) {
-  const frames = (analysis?.frames || []).filter(frame => frame.voiced);
-  const hz = finiteMedian(frames.map(frame => frame.hz));
-  const f2 = finiteMedian(frames.map(frame => frame.f2));
-  const vtl = finiteMedian(frames.map(frame => frame.vtl));
-  const tilt = finiteMedian(frames.map(frame => frame.tilt));
-  const resonance = finiteMedian(frames.map(frame => frame.resonance));
-  const centroid = finiteMedian(frames.map(frame => frame.centroid));
-  const f0Term = Number.isFinite(hz) ? clamp((hz - 165) / 55, -1.4, 1.4) : 0;
-  const f2Term = Number.isFinite(f2) ? clamp((f2 - 1550) / 400, -1.4, 1.4) : 0;
-  const vtlTerm = Number.isFinite(vtl) ? clamp((15.6 - vtl) / 1.8, -1.4, 1.4) : 0;
-  const tiltTerm = Number.isFinite(tilt) ? clamp((tilt - (-7.5)) / 3.5, -1.4, 1.4) : 0;
-  const resonanceTerm = Number.isFinite(resonance)
-    ? clamp((resonance - (-12)) / 8, -1.4, 1.4)
-    : (Number.isFinite(centroid) ? clamp((centroid - 1100) / 450, -1.4, 1.4) : 0);
-  const acousticLogit = 0.55 * f2Term + 0.5 * vtlTerm + 0.4 * resonanceTerm + 0.32 * tiltTerm + 0.22 * f0Term;
-  let probability = sigmoid(acousticLogit);
+  const voiced = (analysis?.frames || []).filter(frame => frame.voiced && Number.isFinite(frame.hz));
+  const vowels = (analysis?.frames || []).filter(frame => frame.voiced && frame.vowel !== false && Number.isFinite(frame.f2));
+  const hz = finiteMedian(voiced.map(frame => frame.hz));
+  const f2 = finiteMedian(vowels.map(frame => frame.f2));
+  const f3 = finiteMedian(vowels.map(frame => frame.f3));
+  const vtl = finiteMedian(vowels.map(frame => frame.vtl));
+  const tilt = finiteMedian(voiced.map(frame => frame.tilt));
+  const resonance = finiteMedian(voiced.map(frame => frame.resonance));
+  const centroid = finiteMedian(voiced.map(frame => frame.centroid));
+  const f3Spread = formantSpread(vowels.map(frame => frame.f3));
   const pitchOnly = sigmoid(Number.isFinite(hz) ? (hz - 165) / 22 : 0);
+  const pitchLabel = pitchOnly >= 0.62 ? 'feminine' : pitchOnly <= 0.38 ? 'masculine' : 'androgynous';
+  const reliable = voiced.length >= 6 && vowels.length >= 6 && Number.isFinite(hz) && Number.isFinite(f2) && !(f3Spread > 900);
+  const features = {
+    hz: round(hz),
+    f2: round(f2),
+    f3: round(f3),
+    vtl: round(vtl),
+    tilt: round(tilt),
+    resonance: round(resonance),
+    centroid: round(centroid),
+    vowels: vowels.length
+  };
+  if (!reliable) {
+    return {
+      label: 'unsure',
+      probability: null,
+      pitchOnly: pitchLabel,
+      pitchProbability: Math.round(pitchOnly * 1000) / 1000,
+      usedEar: false,
+      features
+    };
+  }
+  const residual = f2 - (F2_FROM_F0.intercept + F2_FROM_F0.slope * hz);
+  const absResidual = Math.abs(residual);
+  const residualTerm = absResidual >= RESIDUAL_FLOOR ? clamp(residual / 160, -1.6, 1.6) : 0;
+  let probability = sigmoid((hz - 165) / 22 + 1.3 * residualTerm);
   const feminine = Number(ear?.feminine);
   const masculine = Number(ear?.masculine);
   let usedEar = false;
@@ -323,22 +376,18 @@ export function profilePhrase(analysis, ear = null) {
     probability = 0.65 * probability + 0.35 * clamp(earProbability, 0, 1);
     usedEar = true;
   }
-  const label = probability >= 0.6 ? 'feminine' : probability <= 0.4 ? 'masculine' : 'androgynous';
-  const pitchLabel = pitchOnly >= 0.62 ? 'feminine' : pitchOnly <= 0.38 ? 'masculine' : 'androgynous';
+  let label = probability >= PROFILE_SURE ? 'feminine' : probability <= 1 - PROFILE_SURE ? 'masculine' : 'unsure';
+  const pitchConfident = pitchLabel === 'feminine' || pitchLabel === 'masculine';
+  if (!usedEar && pitchConfident && label !== pitchLabel && label !== 'unsure' && absResidual < RESIDUAL_OVERRIDE) {
+    label = 'unsure';
+  }
   return {
     label,
     probability: Math.round(probability * 1000) / 1000,
     pitchOnly: pitchLabel,
     pitchProbability: Math.round(pitchOnly * 1000) / 1000,
     usedEar,
-    features: {
-      hz: round(hz),
-      f2: round(f2),
-      vtl: round(vtl),
-      tilt: round(tilt),
-      resonance: round(resonance),
-      centroid: round(centroid)
-    }
+    features: { ...features, residual: round(residual) }
   };
 }
 
@@ -449,7 +498,7 @@ export function createCoachSession({
       prompt: phrase.prompt.slice(0, 180),
       transcript: phrase.transcript.slice(0, 180),
       feedback: phrase.feedback.slice(0, 240),
-      profile: PROFILE_LABELS.includes(phrase.profile) ? phrase.profile : 'androgynous',
+      profile: PROFILE_LABELS.includes(phrase.profile) ? phrase.profile : 'unsure',
       tooNoisy: !!phrase.tooNoisy,
       words: phrase.words.slice(0, SAVED_WORDS).map(word => ({
         text: String(word.text || '').slice(0, 32),
@@ -462,7 +511,7 @@ export function createCoachSession({
       routineId,
       plannedMinutes: [20, 30, 40].includes(plannedMinutes) ? plannedMinutes : 30,
       actualMinutes: Math.max(minutes, minutes === 0 ? 0 : minutes),
-      comfort: comfort ?? 3,
+      comfort: comfortKnown ? comfort : null,
       cueHeld,
       kind: 'coach',
       coach: {
@@ -642,7 +691,7 @@ export function scoreFlags(cases) {
 }
 
 export function confusion(pairs) {
-  const labels = ['masculine', 'androgynous', 'feminine'];
+  const labels = ['masculine', 'androgynous', 'feminine', 'unsure'];
   const matrix = Object.fromEntries(labels.map(label => [label, Object.fromEntries(labels.map(item => [item, 0]))]));
   let correct = 0;
   const failures = [];

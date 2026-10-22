@@ -295,7 +295,7 @@
         </section>
 
         <section class="view" id="settingsView">
-          <div class="eyebrow">MAKE IT YOURS</div><h1>Settings</h1><p class="lede">Progress and acoustic scoring are saved to your account and computed on this device. A recording is uploaded only when you request Workers AI transcription; word locations then use Cloudflare’s returned timestamps.</p>
+          <div class="eyebrow">MAKE IT YOURS</div><h1>Settings</h1><p class="lede">Progress and acoustic scoring are saved to your account and computed on this device. Drive coach sends each phrase to Cloudflare for a transcript and a second listen. A recording is also uploaded when you request Workers AI transcription; word locations then use Cloudflare’s returned timestamps.</p>
           <div class="settings-grid">
             <article class="settings-card"><span class="kicker">VOICE GOAL</span><h2>Choose a direction</h2><p>Presets are starting points. Tune them to your anatomy, comfort, culture, and expression.</p><div id="presetCards"></div></article>
             <article class="settings-card"><span class="kicker">PRIVACY &amp; DATA</span><h2>Your account, your progress</h2><label class="toggle-row"><span><b>Save audio with attempts</b><small>Uses IndexedDB in this browser; audio does not sync</small></span><input type="checkbox" id="saveAudioToggle" /></label><button class="secondary-button full" id="exportData">Export progress JSON</button><button class="secondary-button full" id="importLocal" hidden>Import previous browser progress</button><button class="secondary-button danger full" id="resetData">Reset account progress</button></article>
@@ -310,13 +310,13 @@
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <button class="modal-close" id="modalClose" aria-label="Close">×</button>
         <span class="kicker">PRIVATE BY DEFAULT</span><h2 id="modalTitle">Your voice stays here.</h2>
-        <p>Acoustic scoring runs in this browser. Progress is saved to your account. When you choose Analyze words with Workers AI, this recording is sent to Cloudflare for transcription and timestamped segments; the app does not retain the uploaded recording. Browser speech recognition, when available, may also use your browser vendor’s service.</p>
+        <p>Acoustic scoring runs in this browser. Progress is saved to your account. Drive coach sends each phrase to Cloudflare for a transcript and a second listen, and does not keep that audio. When you choose Analyze words with Workers AI, that recording is sent to Cloudflare for transcription and timestamped segments. Browser speech recognition, when available, may also use your browser vendor’s service.</p>
         <button class="primary-button" id="modalOkay">Got it</button>
       </div>
     </div>
 
-    <video id="coachStayAwake" class="coach-stay-awake" muted playsinline webkit-playsinline loop preload="auto" src="stay-awake.mp4"></video>
-    <div id="coachOverlay" class="coach-overlay" hidden>
+    <video id="coachStayAwake" class="coach-stay-awake" muted playsinline webkit-playsinline loop preload="auto" src="stay-awake.mp4" aria-hidden="true"></video>
+    <div id="coachOverlay" class="coach-overlay" hidden tabindex="-1">
       <p class="coach-kicker" id="coachKicker">DRIVE COACH</p>
       <h1 id="coachLine">Listening.</h1>
       <p id="coachSub" class="coach-sub"></p>

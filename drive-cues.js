@@ -7,9 +7,9 @@ export const CUE_LIBRARY = {
   drop: {
     name: 'End-of-phrase pitch drop',
     variants: [
-      'Keep the last syllable up, and end it like a gentle question.',
-      'Say that word once more, and lift the very end.',
-      'Finish while the sound is still moving up, instead of letting it fall.'
+      'Lift the end of the word so the last sound does not fall.',
+      'Say that word once more, and keep the end of the word up.',
+      'Finish the end of the word while the sound is still moving up.'
     ]
   },
   chesty: {
@@ -23,15 +23,14 @@ export const CUE_LIBRARY = {
   dark: {
     name: 'Low overall formants',
     variants: [
-      'Lift your larynx a little, think of a small-dog pant or a whispered hee, before the word.',
-      'Make the space inside your mouth a bit smaller, then say the word again.',
-      'Start with a tiny hee, then the word, and keep that smaller feeling.'
+      'Lift your larynx a little, like a whispered hee, then say the word with your tongue forward.',
+      'Bring the tongue forward, toward the front of the mouth, then say the word again.'
     ]
   },
   heavy: {
     name: 'Heavy buzzy weight',
     variants: [
-      'Lighten up, thinner and softer, like talking to a sleeping baby, with less buzz in your chest.',
+      'Use a lighter voice, with less buzz in your chest.',
       'Use only enough voice for someone close by, and let the buzz get thinner.',
       'Sigh the word out lightly, then say it again the same easy way.'
     ]
@@ -39,9 +38,23 @@ export const CUE_LIBRARY = {
   fry: {
     name: 'Vocal fry',
     variants: [
-      'Take a breath before the last words, and keep air flowing all the way to the end.',
-      'Put a little airflow under the last word so it does not creak.',
+      'Take a breath before the last words, and keep air flowing so the end does not creak.',
+      'Put a little airflow under the last word so it does not fall into fry.',
       'Breathe, then finish the word while the air is still moving.'
+    ]
+  },
+  low: {
+    name: 'Pitch sitting low',
+    variants: [
+      'Bring the pitch up a little, and keep it there.',
+      'Let the pitch sit a bit higher through the whole word.'
+    ]
+  },
+  breath: {
+    name: 'Breathy voice',
+    variants: [
+      'Use a little less air so the tone stays clear.',
+      'Keep the tone connected, with less air leaking through the word.'
     ]
   },
   strain: {
@@ -69,19 +82,13 @@ export const CUE_LIBRARY = {
   }
 };
 
-export const PRAISE_LINES = [
-  "Nice lift on '{word}'.",
-  "'{word}' stayed easy.",
-  "Good, '{word}' held."
-];
-
 export const IMPROVED_LINES = [
   "'{word}' is better than last time.",
   "That '{word}' improved.",
   "'{word}' held this time."
 ];
 
-export const ISSUE_ORDER = ['strain', 'fry', 'drop', 'heavy', 'chesty', 'dark'];
+export const ISSUE_ORDER = ['strain', 'fry', 'drop', 'low', 'heavy', 'chesty', 'dark', 'breath'];
 
 const PROBLEM = {
   drop: 'dropped',
@@ -89,7 +96,9 @@ const PROBLEM = {
   dark: 'sounded too big in the throat',
   heavy: 'went heavy',
   fry: 'fell into fry',
-  strain: 'sounded pressed'
+  strain: 'sounded pressed',
+  low: 'sat low in pitch',
+  breath: 'went breathy'
 };
 
 export function cueLine(issue, cursor) {

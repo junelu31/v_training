@@ -1,5 +1,6 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
 import { classifyUtterance, createCoachSession, matchCommand, parseEar } from './drive-coach.js';
+import { describeTake } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 
 let audioContext = null;
@@ -22,6 +23,9 @@ let contextBound = false;
 let micGeneration = 0;
 let captureScratch = new Float32Array(0);
 let stayAwake = null;
+let visibilityHandler = null;
+let workletReady = null;
+const RAW_MIC = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
 
 function el(id) {
   return document.getElementById(id);
@@ -30,9 +34,11 @@ function el(id) {
 function show(line, sub = '') {
   const overlay = el('coachOverlay');
   if (!overlay) return;
+  const wasHidden = overlay.hidden;
   overlay.hidden = false;
   el('coachLine').textContent = line;
   el('coachSub').textContent = sub;
+  if (wasHidden) overlay.focus();
 }
 
 function showAwake(mode) {
@@ -72,17 +78,24 @@ function ensureStayAwake() {
     isVideoPlaying() {
       const video = stayVideo();
       return !!video && !video.paused && !video.ended;
+    },
+    isVisible() {
+      return document.visibilityState === 'visible';
+    },
+    onMode(mode) {
+      showAwake(mode);
     }
   });
   return stayAwake;
 }
 
-async function context() {
+function ensureContext() {
   if (!audioContext) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
     try {
-      audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+      audioContext = new Ctor({ sampleRate: SAMPLE_RATE });
     } catch {
-      audioContext = new AudioContext();
+      audioContext = new Ctor();
     }
   }
   if (!contextBound) {
@@ -99,10 +112,15 @@ async function context() {
       }
     };
   }
-  if (audioContext.state === 'suspended') await audioContext.resume();
+  return audioContext;
+}
+
+async function context() {
+  const ctx = ensureContext();
+  if (ctx.state === 'suspended') await ctx.resume();
   const sessionAudio = navigator.audioSession;
   if (sessionAudio && sessionAudio.type !== 'play-and-record') sessionAudio.type = 'play-and-record';
-  return audioContext;
+  return ctx;
 }
 
 function outputGain(ctx) {
@@ -169,9 +187,15 @@ async function say(text) {
   else await speakLocal(text);
 }
 
+function fetchWithTimeout(url, options, ms = 2500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 async function cloudSpeech(text) {
   try {
-    const response = await fetch('/api/drive/turn', {
+    const response = await fetchWithTimeout('/api/drive/turn', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -216,7 +240,7 @@ function wavBase64(samples, sampleRate) {
 
 async function cloudTurn(samples, sampleRate, line) {
   try {
-    const response = await fetch('/api/drive/turn', {
+    const response = await fetchWithTimeout('/api/drive/turn', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -237,14 +261,36 @@ function checkpoint() {
   } else session.queueSave(entry);
 }
 
+function bindVisibility() {
+  if (visibilityHandler) return;
+  visibilityHandler = () => { onVisibility().catch(() => {}); };
+  document.addEventListener('visibilitychange', visibilityHandler);
+}
+
+function unbindVisibility() {
+  if (!visibilityHandler) return;
+  document.removeEventListener('visibilitychange', visibilityHandler);
+  visibilityHandler = null;
+}
+
 async function finishSession(entry) {
   if (entry) savedDeps.save(entry);
   await ensureStayAwake().stop();
   showAwake('off');
+  unbindVisibility();
   releaseGraph();
   await suspendAudio();
   const overlay = el('coachOverlay');
   if (overlay) overlay.hidden = true;
+}
+
+function spokenLine(turn, local) {
+  const take = turn?.samples?.length ? describeTake(turn.samples, turn.sampleRate || SAMPLE_RATE) : null;
+  const localText = local.feedback?.text || '';
+  if (take?.tooNoisy) return take.text;
+  if (take?.cueId === 'pitch-drop-end' && local.feedback?.issue === 'fry') return take.text;
+  if (!localText && take?.text) return take.text;
+  return localText;
 }
 
 async function onTurn(turn) {
@@ -256,12 +302,22 @@ async function onTurn(turn) {
     goal: savedDeps.getGoal(),
     cursor: session.status().cursor
   });
-  const cloud = await cloudTurn(turn.samples, turn.sampleRate, local.feedback.text);
-  if (!session || hiddenByPage || session.status().stopped) return;
+  const localText = spokenLine(turn, local);
+  if (localText) {
+    lastFeedback = localText;
+    show(localText, prompt || '');
+  }
+  const voicePromise = localText ? speakLocal(localText) : Promise.resolve();
+  const cloud = await cloudTurn(turn.samples, turn.sampleRate, localText);
+  if (!session || hiddenByPage || session.status().stopped) {
+    await voicePromise;
+    return;
+  }
   const ear = cloud?.ear ? parseEar(cloud.ear) : null;
   const heard = cloud?.transcript || '';
   const command = matchCommand(heard, { paused: session.status().paused });
   if (command) {
+    await voicePromise;
     const result = session.command(command);
     if (result.type === 'pause') userPaused = true;
     if (result.type === 'resume') {
@@ -276,6 +332,7 @@ async function onTurn(turn) {
   if (awaitingComfort) {
     const comfort = session.comfortReply(heard || prompt);
     if (comfort?.say) {
+      await voicePromise;
       awaitingComfort = false;
       await say(comfort.say);
       if (comfort.type === 'comfort-pause') await finishSession(comfort.entry);
@@ -290,40 +347,66 @@ async function onTurn(turn) {
     ear,
     cursor: session.status().cursor
   }) : local;
+  if (localText && judged.feedback) judged.feedback = { ...judged.feedback, text: localText };
   const noted = session.noteAnalysis(judged, { transcript: heard || prompt, at: clock ? clock() : Date.now() });
+  await voicePromise;
   if (noted.ignored) return;
   lastFeedback = judged.feedback.text;
   for (const event of noted.events) {
     if (event.type === 'comfort-check') awaitingComfort = true;
-    if (event.text) await say(event.text);
+    if (event.text && event.text !== localText) await say(event.text);
   }
   if (noted.events.some(event => event.type === 'feedback')) checkpoint();
   show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback);
 }
 
-async function listen() {
+function pushCaptured(input, ctx) {
+  const copy = new Float32Array(input.length);
+  copy.set(input);
+  const samples = ctx.sampleRate === SAMPLE_RATE ? copy : resampleLinear(copy, ctx.sampleRate, SAMPLE_RATE);
+  detector?.push(samples);
+}
+
+async function attachCapture(ctx, generation) {
+  sourceNode = ctx.createMediaStreamSource(stream);
+  if (ctx.audioWorklet?.addModule) {
+    try {
+      if (!workletReady) workletReady = ctx.audioWorklet.addModule('drive-capture-worklet.js');
+      await workletReady;
+      const node = new AudioWorkletNode(ctx, 'drive-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+      processor = node;
+      node.port.onmessage = event => {
+        if (generation !== micGeneration) return;
+        const channel = event.data;
+        if (channel?.length) pushCaptured(channel, ctx);
+      };
+      sourceNode.connect(node);
+      node.connect(outputGain(ctx));
+      return;
+    } catch {
+      workletReady = null;
+    }
+  }
+  processor = ctx.createScriptProcessor(2048, 1, 1);
+  processor.onaudioprocess = event => {
+    const input = event.inputBuffer.getChannelData(0);
+    pushCaptured(input, ctx);
+  };
+  sourceNode.connect(processor);
+  processor.connect(outputGain(ctx));
+}
+
+async function listen(alreadyOpen) {
   const ctx = await context();
   releaseGraph();
   const generation = micGeneration;
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
-  });
+  stream = alreadyOpen || await navigator.mediaDevices.getUserMedia({ audio: RAW_MIC });
   if (generation !== micGeneration || hiddenByPage) {
     stream.getTracks().forEach(track => track.stop());
     stream = null;
     return;
   }
-  sourceNode = ctx.createMediaStreamSource(stream);
-  processor = ctx.createScriptProcessor(2048, 1, 1);
-  processor.onaudioprocess = event => {
-    const input = event.inputBuffer.getChannelData(0);
-    if (captureScratch.length !== input.length) captureScratch = new Float32Array(input.length);
-    captureScratch.set(input);
-    const samples = ctx.sampleRate === SAMPLE_RATE ? captureScratch : resampleLinear(captureScratch, ctx.sampleRate, SAMPLE_RATE);
-    detector?.push(samples);
-  };
-  sourceNode.connect(processor);
-  processor.connect(outputGain(ctx));
+  await attachCapture(ctx, generation);
   stream.getAudioTracks()[0].addEventListener('ended', () => {
     if (generation !== micGeneration || hiddenByPage || !session || session.status().stopped) return;
     session.interrupt('mic-ended');
@@ -378,9 +461,22 @@ export function mountDriveCoach(deps) {
   fileTest = new URLSearchParams(location.search).has('coachTest');
   el('coachTestRow').hidden = !fileTest;
   const clicked = () => {
+    const ctx = ensureContext();
+    let resumePromise;
+    try { resumePromise = ctx.resume(); } catch (error) { resumePromise = Promise.reject(error); }
+    if (resumePromise && typeof resumePromise.catch === 'function') resumePromise.catch(() => {});
+    let micPromise = null;
+    if (!fileTest && navigator.mediaDevices?.getUserMedia) {
+      try { micPromise = navigator.mediaDevices.getUserMedia({ audio: RAW_MIC }); }
+      catch (error) { micPromise = Promise.reject(error); }
+    }
     const ready = ensureStayAwake().arm();
-    el('coachOverlay').hidden = false;
-    begin(ready).catch(error => show('The microphone is needed.', error.message || 'Allow the microphone, then tap to continue.'));
+    const overlay = el('coachOverlay');
+    if (overlay) {
+      overlay.hidden = false;
+      overlay.focus();
+    }
+    begin(ready, micPromise).catch(error => show('The microphone is needed.', error.message || 'Allow the microphone, then tap to continue.'));
   };
   el('startCoach').onclick = clicked;
   el('coachResume').onclick = clicked;
@@ -388,7 +484,7 @@ export function mountDriveCoach(deps) {
     const ready = (!session || session.status().stopped) ? ensureStayAwake().arm() : null;
     consumeFile(el('coachFile').files?.[0], ready);
   };
-  document.addEventListener('visibilitychange', () => { onVisibility().catch(() => {}); });
+  bindVisibility();
   navigator.mediaDevices?.addEventListener?.('devicechange', () => {
     if (!session || session.status().stopped || hiddenByPage) return;
     const track = stream?.getAudioTracks?.()[0];
@@ -416,7 +512,8 @@ export function mountDriveCoach(deps) {
   };
 }
 
-async function begin(ready) {
+async function begin(ready, micPromise = null) {
+  bindVisibility();
   const mode = await ready;
   showAwake(mode);
   userPaused = false;
@@ -437,7 +534,7 @@ async function begin(ready) {
   hiddenByPage = false;
   el('coachResume').hidden = true;
   show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback || 'I am listening.');
-  if (!fileTest) await listen();
+  if (!fileTest) await listen(micPromise ? await micPromise : null);
   else await context();
 }
 

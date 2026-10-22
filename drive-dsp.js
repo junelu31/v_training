@@ -3,7 +3,7 @@ import { spectralBalance } from './voice-metrics.js';
 export const SAMPLE_RATE = 16000;
 const FRAME = 1024;
 const HOP = 320;
-const MIN_HZ = 95;
+const MIN_HZ = 70;
 const MAX_HZ = 460;
 
 export function mulberry32(seed) {
@@ -204,79 +204,152 @@ export function estimatePitch(frame, sampleRate) {
   return { hz, confidence: best, rms: rawRms, subharm };
 }
 
-function lpcCoeffs(frame, order) {
-  const n = frame.length;
-  const r = new Float64Array(order + 1);
+function ifftRadix2(re, im) {
+  const n = re.length;
   for (let i = 0; i < n; i++) {
-    const x = frame[i];
-    r[0] += x * x;
-    for (let k = 1; k <= order && i + k < n; k++) r[k] += x * frame[i + k];
+    const swap = re[i];
+    re[i] = im[i];
+    im[i] = swap;
   }
-  if (r[0] < 1e-8) return null;
-  const a = new Float64Array(order + 1);
-  a[0] = 1;
-  let err = r[0];
-  const tmp = new Float64Array(order + 1);
-  for (let i = 1; i <= order; i++) {
-    let acc = r[i];
-    for (let j = 1; j < i; j++) acc += a[j] * r[i - j];
-    const k = -acc / err;
-    for (let j = 1; j < i; j++) tmp[j] = a[j] + k * a[i - j];
-    tmp[i] = k;
-    for (let j = 1; j <= i; j++) a[j] = tmp[j];
-    err *= 1 - k * k;
-    if (err <= 1e-9) break;
+  fftRadix2(re, im);
+  for (let i = 0; i < n; i++) {
+    const swap = re[i] / n;
+    re[i] = im[i] / n;
+    im[i] = swap;
   }
-  return a;
 }
 
-function formantPeaks(frame, sampleRate) {
-  const pre = new Float32Array(frame.length);
-  let prev = 0;
-  for (let i = 0; i < frame.length; i++) {
-    pre[i] = frame[i] - 0.97 * prev;
-    prev = frame[i];
+// Low-quefrency envelope. Harmonic peaks sit at the pitch period, so keeping
+// only the first ~2 ms leaves the vocal-tract shape.
+function envelopeDb(frame, sampleRate, seconds = 0.0022) {
+  const n = 512;
+  const re = new Float32Array(n);
+  const im = new Float32Array(n);
+  const offset = Math.max(0, Math.floor((frame.length - n) / 2));
+  for (let i = 0; i < n; i++) {
+    const w = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (n - 1));
+    re[i] = (frame[offset + i] || 0) * w;
   }
-  const a = lpcCoeffs(pre, 12);
-  if (!a) return { f1: NaN, f2: NaN, f3: NaN, vtl: NaN };
-  const bins = 512;
-  const env = new Float64Array(bins);
-  for (let i = 1; i < bins; i++) {
-    const w = Math.PI * i / bins;
-    let re = 0, im = 0;
-    for (let k = 0; k < a.length; k++) {
-      re += a[k] * Math.cos(w * k);
-      im -= a[k] * Math.sin(w * k);
-    }
-    env[i] = -Math.log(Math.max(Math.hypot(re, im), 1e-8));
+  fftRadix2(re, im);
+  for (let i = 0; i <= n / 2; i++) {
+    const value = Math.log(Math.max(Math.hypot(re[i], im[i]), 1e-8));
+    re[i] = value;
+    im[i] = 0;
+    if (i > 0 && i < n / 2) re[n - i] = value;
   }
+  for (let i = n / 2 + 1; i < n; i++) im[i] = 0;
+  ifftRadix2(re, im);
+  const keep = Math.max(12, Math.round(sampleRate * seconds));
+  for (let k = keep; k <= n - keep; k++) {
+    re[k] = 0;
+    im[k] = 0;
+  }
+  fftRadix2(re, im);
+  return re;
+}
+
+function readPeaks(env, sampleRate) {
+  const n = env.length;
+  const binHz = sampleRate / n;
   const peaks = [];
-  for (let i = 4; i < bins - 4; i++) {
+  for (let i = 3; i < n / 2 - 3; i++) {
     if (env[i] < env[i - 1] || env[i] < env[i + 1]) continue;
-    const prom = env[i] - Math.min(env[i - 4], env[i + 4]);
-    const hz = (i / bins) * (sampleRate / 2);
-    if (prom > 0.045 && hz >= 220 && hz <= 4400) peaks.push(hz);
+    const prom = env[i] - Math.min(env[i - 3], env[i + 3]);
+    if (prom < 0.12) continue;
+    const denom = env[i - 1] - 2 * env[i] + env[i + 1];
+    const delta = Math.abs(denom) > 1e-6 ? 0.5 * (env[i - 1] - env[i + 1]) / denom : 0;
+    const hz = (i + Math.max(-0.5, Math.min(0.5, delta))) * binHz;
+    if (hz >= 200 && hz <= 4600) peaks.push(hz);
   }
+  return peaks;
+}
+
+function assignFormants(peaks, close) {
   let f1 = NaN;
   let f2 = NaN;
   let f3 = NaN;
   for (const hz of peaks) {
-    if (!Number.isFinite(f1) && hz >= 220 && hz <= 950) {
+    if (!Number.isFinite(f1) && hz >= 220 && hz <= 980) {
       f1 = hz;
       continue;
     }
-    if (Number.isFinite(f1) && !Number.isFinite(f2) && hz >= Math.max(850, f1 + 280) && hz <= 2700) {
+    const f2Floor = close ? Math.max(650, f1 + 70) : Math.max(900, f1 + 300);
+    if (Number.isFinite(f1) && !Number.isFinite(f2) && hz >= f2Floor && hz <= 2800) {
       f2 = hz;
       continue;
     }
-    if (Number.isFinite(f2) && !Number.isFinite(f3) && hz >= f2 + 350 && hz <= 4200) {
+    if (Number.isFinite(f2) && !Number.isFinite(f3) && hz >= f2 + (close ? 220 : 300) && hz <= 4300) {
       f3 = hz;
       break;
     }
   }
+  return { f1, f2, f3 };
+}
+
+// Order-16 LPC splits a second resonance that the 2.2 ms cepstral lifter merges
+// into F1. The cepstral F2 above is what the LibriSpeech fit was calibrated on.
+function lpcFormants(frame, sampleRate) {
+  const order = 16;
+  const n = frame.length;
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += frame[i];
+  mean /= n;
+  const x = new Float32Array(n);
+  for (let i = 0; i < n; i++) x[i] = frame[i] - mean;
+  for (let i = n - 1; i > 0; i--) x[i] -= 0.97 * x[i - 1];
+  const r = new Float32Array(order + 1);
+  for (let lag = 0; lag <= order; lag++) {
+    let sum = 0;
+    for (let i = 0; i < n - lag; i++) sum += x[i] * x[i + lag];
+    r[lag] = sum;
+  }
+  const a = new Float32Array(order + 1);
+  a[0] = 1;
+  let err = r[0] || 1e-8;
+  for (let m = 1; m <= order; m++) {
+    let acc = r[m];
+    for (let k = 1; k < m; k++) acc += a[k] * r[m - k];
+    const refl = -acc / err;
+    const next = a.slice();
+    next[m] = refl;
+    for (let i = 1; i < m; i++) next[i] = a[i] + refl * a[m - i];
+    for (let i = 0; i <= m; i++) a[i] = next[i];
+    err *= 1 - refl * refl;
+    if (err <= 1e-10) break;
+  }
+  const bins = 512;
+  const peaks = [];
+  let prev = 0;
+  let prev2 = 0;
+  for (let i = 0; i <= bins / 2; i++) {
+    let re = 1;
+    let im = 0;
+    const w = -2 * Math.PI * i / bins;
+    for (let k = 1; k <= order; k++) {
+      re += a[k] * Math.cos(w * k);
+      im += a[k] * Math.sin(w * k);
+    }
+    const mag = 1 / Math.max(Math.hypot(re, im), 1e-8);
+    if (i > 2 && prev >= prev2 && prev >= mag) {
+      const hz = ((i - 1) * sampleRate) / bins;
+      if (hz >= 200 && hz <= 4200) peaks.push(hz);
+    }
+    prev2 = prev;
+    prev = mag;
+  }
+  return assignFormants(peaks, true);
+}
+
+function formantPeaks(frame, sampleRate) {
+  const wide = assignFormants(readPeaks(envelopeDb(frame, sampleRate, 0.0022), sampleRate), false);
+  const close = lpcFormants(frame, sampleRate);
+  const f1 = wide.f1;
+  const f2 = wide.f2;
+  const f3 = wide.f3;
   let vtl = NaN;
-  if (Number.isFinite(f1) && Number.isFinite(f3) && f3 > f1 + 500) vtl = 35000 / (f3 - f1);
-  return { f1, f2, f3, vtl };
+  if (Number.isFinite(f3) && f3 >= 1700 && f3 <= 4200) vtl = 43750 / f3;
+  const f2Local = Number.isFinite(close.f2) ? close.f2 : f2;
+  return { f1, f2, f3, vtl, f2Local };
 }
 
 function bandMeanDb(db, sampleRate, lo, hi) {
@@ -329,7 +402,13 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
     for (let i = start; i < start + FRAME; i++) energy += filtered[i] * filtered[i];
     rough.push(Math.sqrt(energy / FRAME));
   }
-  const noiseFloor = Math.max(percentile(rough, 0.08), 1e-5);
+  const quietLevel = percentile(rough, 0.08);
+  const midLevel = percentile(rough, 0.5);
+  // A steady vowel has no quieter pocket. Using that level as the floor
+  // makes every frame look like noise. A real gap is much quieter than the middle.
+  const noiseFloor = midLevel > quietLevel * 3
+    ? Math.max(quietLevel, 1e-5)
+    : Math.max(Math.min(quietLevel, midLevel * 0.15), 1e-4);
   const frames = [];
   let previousHz = NaN;
   let index = 0;
@@ -352,8 +431,11 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
     const high = bandMeanDb(db, sampleRate, 1300, 3400);
     const resonance = Number.isFinite(low) && Number.isFinite(high) ? high - low : NaN;
     const centroid = spectralCentroid(db, sampleRate);
-    const harmonicOk = pitch.confidence >= 0.48 && flatness < 0.62 && support > 1.5 && snr > 2.5;
-    const voiced = harmonicOk && Number.isFinite(pitch.hz) && pitch.hz >= MIN_HZ && pitch.hz <= MAX_HZ;
+    const harmonicOk = pitch.confidence >= 0.36 && flatness < 0.72 && support > 1.5 && snr > 2.5;
+    // Below 95 Hz, a road-rumble sine can lock. A vowel still has energy above it.
+    const lowTone = Number.isFinite(pitch.hz) && pitch.hz < 95;
+    const lowToneOk = !lowTone || (flatness < 0.28 && support > 4 && centroid > 350);
+    const voiced = harmonicOk && lowToneOk && Number.isFinite(pitch.hz) && pitch.hz >= MIN_HZ && pitch.hz <= MAX_HZ;
     let fry = 0;
     if (voiced && pitch.hz < 155) {
       if (jitter > 0.04) fry += 0.45;
@@ -361,7 +443,8 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
       if (pitch.confidence < 0.7) fry += 0.3;
     }
     fry = Math.min(1, fry);
-    const formants = voiced ? formantPeaks(buf, sampleRate) : { f1: NaN, f2: NaN, f3: NaN, vtl: NaN };
+    const vowel = voiced && flatness < 0.4 && support > 2.4 && snr > 6;
+    const formants = vowel ? formantPeaks(buf, sampleRate) : { f1: NaN, f2: NaN, f3: NaN, vtl: NaN };
     if (voiced) previousHz = pitch.hz;
     frames.push({
       t: (start + FRAME / 2) / sampleRate,
@@ -374,11 +457,14 @@ export function analyzePcm(samples, sampleRate = SAMPLE_RATE) {
       h1h2: Number.isFinite(h1h2) ? h1h2 : NaN,
       f1: formants.f1,
       f2: formants.f2,
+      f2Local: formants.f2Local,
       f3: formants.f3,
       vtl: formants.vtl,
+      vowel,
       resonance: Number.isFinite(resonance) ? resonance : NaN,
       centroid: Number.isFinite(centroid) ? centroid : NaN,
       fry,
+      subharm: pitch.subharm,
       snr,
       voiced,
       support,
@@ -449,7 +535,10 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     const flatness = spectralFlatness(db);
     const support = harmonicScore(db, sampleRate, pitch.hz);
     const snr = 20 * Math.log10(Math.max(rms, 1e-5) / Math.max(noise, 1e-4));
-    const voiced = pitch.confidence >= 0.48 && flatness < 0.62 && support > 1.5 && snr > 2.5 &&
+    const lowBand = bandMeanDb(db, sampleRate, 70, 180);
+    const midBand = bandMeanDb(db, sampleRate, 400, 2500);
+    const lowToneOk = !(Number.isFinite(pitch.hz) && pitch.hz < 95) || (flatness < 0.28 && support > 4 && Number.isFinite(midBand) && Number.isFinite(lowBand) && midBand > lowBand - 6);
+    const voiced = pitch.confidence >= 0.36 && flatness < 0.72 && support > 1.5 && snr > 2.5 && lowToneOk &&
       Number.isFinite(pitch.hz) && pitch.hz >= MIN_HZ && pitch.hz <= MAX_HZ;
     if (!voiced) noise = noise * 0.985 + rms * 0.015;
     else noise = noise * 0.998 + rms * 0.002;
@@ -464,7 +553,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
   }
 
   function finish(reason) {
-    if (!inSpeech) return;
+    if (!inSpeech) return null;
     inSpeech = false;
     const samples = utterance.slice(0, uttLen);
     const duration = uttLen / sampleRate;
@@ -480,9 +569,40 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     const snrDb = trackerSnr;
     const tooNoisy = !(snrDb >= TURN.snrCoachMin) || analysis.voicedFraction < 0.12;
     const speechLike = analysis.frames.some(frame => frame.voiced) && analysis.voicedFraction >= 0.08 && duration >= TURN.minTurnMs / 1000;
-    if (!speechLike) return;
+    if (!speechLike) return null;
     turns++;
-    onTurn?.({ samples, sampleRate, duration, reason, ...analysis, snrDb, trackerSnr, tooNoisy });
+    const turn = { samples, sampleRate, duration, reason, ...analysis, snrDb, trackerSnr, tooNoisy };
+    onTurn?.(turn);
+    return turn;
+  }
+
+  let loudMs = 0;
+  let loudVoicedMs = 0;
+  let noiseWarned = false;
+
+  function noteLoud(rawRms, voiced) {
+    if (inSpeech || noiseWarned || speaking) return;
+    if (rawRms >= 0.12) {
+      loudMs += hopMs;
+      if (voiced) loudVoicedMs += hopMs;
+      if (loudMs >= 640 && loudVoicedMs / Math.max(loudMs, 1) < 0.15) {
+        noiseWarned = true;
+        onTurn?.({
+          samples: new Float32Array(0),
+          sampleRate,
+          duration: loudMs / 1000,
+          reason: 'noise',
+          frames: [],
+          snrDb: 0,
+          trackerSnr: 0,
+          voicedFraction: loudVoicedMs / Math.max(loudMs, 1),
+          tooNoisy: true
+        });
+      }
+    } else if (rawRms < 0.05) {
+      loudMs = 0;
+      loudVoicedMs = 0;
+    }
   }
 
   return {
@@ -516,6 +636,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
         const rawRms = Math.sqrt(rawEnergy / HOP);
         if (!inSpeech) rawNoise = rawRms < rawNoise * 1.8 ? rawNoise * 0.9 + rawRms * 0.1 : rawNoise * 0.98 + rawRms * 0.02;
         const decision = classifyHop(filteredHop);
+        if (!inSpeech) noteLoud(rawRms, decision.voiced);
         if (!inSpeech) {
           if (decision.voiced) {
             voicedMs += hopMs;
@@ -565,6 +686,11 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
       quietMs = 0;
       speaking = false;
       guardSamples = 0;
+      loudMs = 0;
+      loudVoicedMs = 0;
+    },
+    flush() {
+      return finish('flush');
     },
     stats() {
       return { turns, inSpeech, speaking, utteranceSamples: uttLen, bufferCap: utterance.length };

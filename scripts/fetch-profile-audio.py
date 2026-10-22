@@ -18,7 +18,7 @@ from datasets import Audio, load_dataset
 
 OUT = '/tmp/lilt-profile'
 SPEAKERS = '/tmp/SPEAKERS.TXT'
-TARGET = 55
+TARGET = 100
 
 
 def ensure_speakers():
@@ -66,6 +66,18 @@ def main():
     counts = {'feminine': 0, 'masculine': 0}
     seen = set()
     manifest = []
+    manifest_path = os.path.join(OUT, 'manifest.json')
+    if os.path.exists(manifest_path):
+        previous = json.load(open(manifest_path, encoding='utf-8'))
+        for speaker in previous.get('speakers', []):
+            if not os.path.exists(os.path.join(OUT, speaker['file'])):
+                continue
+            if speaker['label'] not in counts or counts[speaker['label']] >= TARGET:
+                continue
+            seen.add(int(speaker['id']))
+            counts[speaker['label']] += 1
+            manifest.append(speaker)
+        print('resumed', counts, flush=True)
     dataset = load_dataset('openslr/librispeech_asr', 'clean', split='train.100', streaming=True)
     dataset = dataset.cast_column('audio', Audio(decode=False))
     for row in dataset:

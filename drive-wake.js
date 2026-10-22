@@ -25,6 +25,27 @@ export function createStayAwake(hooks) {
     onRelease = () => {
       lock.removeEventListener?.('release', onRelease);
       if (sentinel === lock) sentinel = null;
+      if (!active) return;
+      const visible = hooks.isVisible ? hooks.isVisible() : (typeof document !== 'undefined' && document.visibilityState === 'visible');
+      if (!visible) {
+        mode = 'off';
+        hooks.onMode?.('off');
+        return;
+      }
+      Promise.resolve().then(() => hooks.requestWakeLock()).then(next => {
+        if (!active || !next) {
+          next?.release?.();
+          return;
+        }
+        hold(next);
+        try { hooks.pauseVideo(); } catch { /* the video can already be quiet */ }
+        mode = 'lock';
+        hooks.onMode?.('lock');
+      }).catch(() => {
+        if (!active) return;
+        mode = 'off';
+        hooks.onMode?.('off');
+      });
     };
     lock.addEventListener?.('release', onRelease);
   }
@@ -37,6 +58,7 @@ export function createStayAwake(hooks) {
     } catch (error) {
       videoPlay = Promise.reject(error);
     }
+    if (videoPlay && typeof videoPlay.catch === 'function') videoPlay.catch(() => {});
     if (sentinel) {
       hooks.pauseVideo();
       return Promise.resolve(mode);

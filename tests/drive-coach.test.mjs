@@ -17,8 +17,8 @@ test('cue library rotates physical lines and stays free of markup', () => {
   }
   assert.match(cueLine('chesty', 0), /tongue more forward/);
   assert.match(cueLine('dark', 0), /larynx/);
-  assert.match(cueLine('heavy', 0), /sleeping baby/);
-  assert.match(cueLine('drop', 0), /gentle question/);
+  assert.match(cueLine('heavy', 0), /lighter voice/);
+  assert.match(cueLine('drop', 0), /end of the word/);
   assert.match(cueLine('fry', 0), /air flowing/);
   assert.match(cueLine('strain', 0), /light hum/);
   assert.notEqual(cueLine('drop', 0), cueLine('drop', 1));
@@ -39,6 +39,8 @@ test('profile uses resonance and weight, so pitch alone loses the swapped voices
   assert.equal(matrix.accuracy, 1);
   assert.equal(matrix.matrix.feminine.feminine, 1);
   assert.equal(matrix.matrix.masculine.masculine, 1);
+  const thin = profilePhrase({ frames: frames({ hz: 180, f2: 1600, vtl: 16, tilt: -6, resonance: -12, count: 3 }) });
+  assert.equal(thin.label, 'unsure');
 });
 
 function burst(partial, count, gap) {
@@ -106,7 +108,7 @@ test('road noise alone never opens a turn, and a buried phrase is too noisy to n
   for (const turn of turns) {
     const result = classifyUtterance({ analysis: turn, prompt: 'please', goal });
     if (result.tooNoisy) assert.match(result.feedback.text, /too noisy|road/);
-    else assert.equal(result.words.some(word => word.flags.some(flag => flag.speak && !['drop', 'fry', 'heavy', 'chesty', 'strain', 'dark'].includes(flag.issue))), false);
+    else assert.equal(result.words.some(word => word.flags.some(flag => flag.speak && !['drop', 'fry', 'heavy', 'chesty', 'strain', 'dark', 'low', 'breath'].includes(flag.issue))), false);
   }
 });
 
