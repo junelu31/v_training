@@ -41,7 +41,7 @@ These are not in the harness. A green run does not clear them.
 
 The long-term voice is `COACH_VOICE` (`aurora`, Grok / xAI TTS) and `voice` in `public/voice/voice.json`. They must match. Coach clips stay at `voice/<hash>.mp3`. A multi-sentence Aurora sample at speed 0.95 measures pitch median about 171.9 Hz and brightness median about −13.6 dB. Drive’s default balanced goal is pitch [160, 210] and brightness [−16, −10].
 
-`PRACTICE_VOICE` is the temporary easier voice, Kokoro `af_bella`, stored under `lilt-coach-voice`. The suite runs one iPhone repeat on Bella (clips from `voice/af_bella/`) and one “main voice” command that comes back to Aurora. Spoken switch lines say “Back to Aurora.” Kokoro `af_river` was the previous long-term coach. Aurora mp3s replace those coach-root bytes in a follow-up. Do not delete the Bella clips.
+`PRACTICE_VOICE` is the temporary easier voice, Kokoro `af_bella`, stored under `lilt-coach-voice`. The suite runs one iPhone repeat on Bella (clips from `voice/af_bella/`) and one “main voice” command that comes back to Aurora. Spoken switch lines say “Back to Aurora.” Coach-root mp3s are Aurora (`source` `xai-tts` in `voice.json`). Bella clips stay under `voice/af_bella/`.
 
 ## Review notes
 

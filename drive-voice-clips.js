@@ -48,8 +48,6 @@ export const VOICE_CLIPS = {
   "try it again, and match how i say it:": "voice/118a5002.mp3",
   "next.": "voice/b9612eb2.mp3",
   "again.": "voice/8e9617b3.mp3",
-  "back to river. match how i say this:": "voice/f88e063c.mp3",
-  "back to river. talk in this voice whenever you are ready.": "voice/c36d92d2.mp3",
   "mmm—maybe we meet near noon.": "voice/e6fc72ed.mp3",
   "who is arriving? we are ready whenever you are.": "voice/1f9d0af4.mp3",
   "nina needs a minute to finish the lemon tea.": "voice/2cd16eb3.mp3",

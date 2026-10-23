@@ -55,7 +55,8 @@ await writeFile('public/voice/voice.json', `${JSON.stringify({
   speed,
   rate: 24000,
   channels: 1,
-  bitrate: '48k'
+  bitrate: '48k',
+  source: 'xai-tts'
 })}\n`);
 
 const scratch = await mkdtemp(join(tmpdir(), 'aurora-tts-'));
