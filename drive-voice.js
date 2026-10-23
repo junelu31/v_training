@@ -9,11 +9,9 @@ import { SESSION_LINES } from './drive-session.js';
 // the word "and", the summary words, and the numbers 0 to 199.
 // Only a part no fragment covers falls back to cloud speech or the device voice.
 
-// af_sarah: American woman, a bit lower and less bright than af_bella, still in a
-// feminine speaking range. Measured on a short line at speed 0.95: about 194 Hz
-// median pitch, against about 215 Hz and a brighter spectrum for af_bella.
-// af_nicole sits nearer 158 Hz, under the feminine floor this app aims at.
-export const COACH_VOICE = 'af_sarah';
+// af_sky: the voice June locked as the coach and the training target.
+// On a short line at speed 0.95 it sits near 170 Hz, lower and less bright than af_bella.
+export const COACH_VOICE = 'af_sky';
 export const COACH_VOICE_SPEED = 0.95;
 
 // Lines from drive-coach.js commands and checks. tests/drive-voice.test.mjs fails if one is missing.

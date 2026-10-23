@@ -1,11 +1,11 @@
 """Render Drive coach lines with one Kokoro voice to small mono MP3 clips.
 
-The default voice is af_sarah. To swap it, set VOICE to another id in
-voices-v1.0.bin (af_nicole, af_sky, af_heart, ...), set the same id on
-COACH_VOICE in drive-voice.js, and re-run with FORCE=1.
+The default voice is af_sky, the coach and the training target. To swap it,
+set VOICE to another id in voices-v1.0.bin, set the same id on COACH_VOICE in
+drive-voice.js, and re-run with FORCE=1.
 
 Usage: node scripts/voice-lines.mjs > /tmp/lines.json
-       VOICE=af_sarah SPEED=0.95 FORCE=1 python scripts/render_voice.py /tmp/lines.json /path/to/kokoro-v1.0.onnx /path/to/voices-v1.0.bin
+       VOICE=af_sky SPEED=0.95 FORCE=1 python scripts/render_voice.py /tmp/lines.json /path/to/kokoro-v1.0.onnx /path/to/voices-v1.0.bin
        node scripts/voice-lines.mjs --manifest
 Needs: pip install kokoro-onnx soundfile, and ffmpeg.
 """
@@ -14,7 +14,7 @@ import soundfile as sf
 from kokoro_onnx import Kokoro
 
 lines_path, model, voices = sys.argv[1:4]
-voice = os.environ.get("VOICE", "af_sarah")
+voice = os.environ.get("VOICE", "af_sky")
 speed = float(os.environ.get("SPEED", "0.95"))
 kokoro = Kokoro(model, voices)
 os.makedirs("public/voice", exist_ok=True)
