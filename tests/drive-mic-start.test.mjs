@@ -187,12 +187,15 @@ class FakeAudioContext {
   createBufferSource() {
     const ctx = this;
     const source = {
+      context: ctx,
       buffer: null,
+      loop: false,
       started: false,
       ended: false,
       stopped: false,
       dests: new Set(),
       connect(dest) { source.dests.add(dest); },
+      disconnect() { source.dests.clear(); },
       onended: null,
       start() {
         source.started = true;
@@ -251,12 +254,15 @@ class FakeAudioContext {
           const size = 128;
           const monoVoice = !explicitMono && (node.channelCount === 1 || node.inputChannels === 1);
           const stereo = ctx.iosMic && !explicitMono && !monoVoice;
+          const clipPlaying = ctx.sources.some(source => source.started && !source.stopped && !source.ended && !source.loop && (source.buffer?.duration || 0) > 0.2);
+          const clocked = ctx.sources.some(source => source.loop && source.started && !source.stopped && !source.ended && source.dests?.has(node));
+          const pulling = !ctx.iosMic || clipPlaying || clocked;
           for (let n = 0; n < blocks; n++) {
             const read = new Set();
             let channel0 = null;
             const pull = channel => {
               read.add(channel);
-              if (!ctx.iosMic || explicitMono) return new Float32Array(size);
+              if (!pulling || !ctx.iosMic || explicitMono) return new Float32Array(size);
               if (stereo && channel !== 0) return new Float32Array(size);
               if (!channel0) {
                 channel0 = new Float32Array(size);
@@ -569,7 +575,8 @@ test('iPhone Safari hears two sentences through the mic graph and answers out lo
     assert.equal(page.audioSession.type, 'play-and-record');
     assert.ok(longClips(audio).length >= 1, 'the opening line played from the audio context');
     assert.notEqual(audio.mediaSource?.channelCountMode, 'explicit');
-    assert.equal(audio.sources.some(source => source.loop), false);
+    const script = audio.nodes.find(node => node.onaudioprocess);
+    assert.ok(audio.sources.some(source => source.loop && source.started && !source.stopped && source.dests.has(script)), 'after the prompt, only a looping source keeps the mic processor alive');
     for (let round = 0; round < 2; round++) {
       const before = longClips(audio).length;
       const postedBefore = audio.voiceSamplesPosted;

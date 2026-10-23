@@ -1,12 +1,13 @@
 // iPhone Safari Drive endurance. June's phone is not here. This harness is the
 // failure that already reached her: the opening line can play, she repeats it,
-// and the coach stays silent because the take never arrives.
+// and the coach stays silent because the take never arrives. The script processor
+// stops when the one-shot prompt ends unless a looping silent source is connected
+// to it. Stereo input keeps the voice on channel 0 and silence on channel 1
+// (WebKit bug 259193). Explicit mono is silence. onended does not fire, and
+// currentTime does not move.
 //
 // Do not "fix" a red run by pushing samples through __liltDriveCoach.feed().
-// That skips the mic graph and is how PR #8 stayed green. Her voice is stereo,
-// channel 0 is empty, the AudioWorklet is handed that empty channel, explicit
-// mono is silence, and a ScriptProcessor does not run unless its output is the
-// context destination. onended does not fire, and currentTime does not move.
+// That skips the mic graph and is how PR #8 stayed green.
 //
 // A full week-1 drive is 53 lines, which is the ~40 minute list. The wall clock
 // is compressed. What is still phone-only is written in qa/iphone-safari-drive.md.
@@ -125,7 +126,9 @@ class FakeAudioContext {
   createBufferSource() {
     const ctx = this;
     const source = {
+      context: ctx,
       buffer: null,
+      loop: false,
       started: false,
       ended: false,
       stopped: false,
@@ -133,6 +136,7 @@ class FakeAudioContext {
       stoppedAt: 0,
       dest: null,
       connect(dest) { source.dest = dest; },
+      disconnect() { source.dest = null; },
       onended: null,
       start() {
         source.started = true;
@@ -187,7 +191,10 @@ class FakeAudioContext {
               numberOfChannels: node.inputChannels,
               getChannelData(channel) {
                 const out = new Float32Array(size);
-                if (channel === 0 || node.inputChannels < 2 || !ctx.deliverMic) return out;
+                const clipPlaying = ctx.sources.some(source => source.started && !source.stopped && !source.ended && !source.loop && (source.buffer?.duration || 0) > 0.2);
+                const clocked = ctx.sources.some(source => source.loop && source.started && !source.stopped && !source.ended && source.dest === node);
+                if (!clipPlaying && !clocked) return out;
+                if (!ctx.deliverMic || channel !== 0) return out;
                 const start = ctx.micPos;
                 const end = Math.min(ctx.micQueue.length, start + size);
                 if (end > start) out.set(ctx.micQueue.subarray(start, end));
