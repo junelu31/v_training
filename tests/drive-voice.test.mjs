@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync, statSync, existsSync } from 'node:fs';
 import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
 import { SESSION_LINES } from '../drive-session.js';
-import { followUpLine, openingLine } from '../drive-coach.js';
-import { COACH_LINES, clipFile, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
+import { createCoachSession, followUpLine, openingLine } from '../drive-coach.js';
+import { COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, clipFile, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
 import { VOICE_CLIPS } from '../drive-voice-clips.js';
 
 const has = text => Boolean(VOICE_CLIPS[text.startsWith("~") ? text : voiceKey(text)]);
@@ -17,7 +17,8 @@ const phrases = content.drills.filter(drill => ids.has(drill.id)).map(drill => d
 test('every fixed line has a clip file that exists and stays small', () => {
   const coachSource = readFileSync(new URL('../drive-coach.js', import.meta.url), 'utf8');
   const literals = [...coachSource.matchAll(/(?:say: |type: '[a-z-]+', text: )'([^'$]+)'/g)].map(match => match[1]);
-  assert.ok(literals.length >= 8);
+  assert.ok(literals.length >= 5, `found ${literals.length} spoken literals`);
+  for (const line of literals) assert.ok(COACH_LINES.includes(line), line);
   const fixed = [...COACH_LINES, ...Object.values(SESSION_LINES), ...Object.values(CUE_LIBRARY).flatMap(entry => entry.variants), ...literals, ...phrases];
   for (const line of fixed) {
     assert.ok(has(line), `no clip for: ${line}`);
@@ -38,9 +39,22 @@ test('opening and follow-up lines play entirely from clips', () => {
   assert.ok(planSpeech(openingLine(''), has).every(part => part.clip));
 });
 
-test('a line that names a word is stitched from Bella fragments, not a second voice', () => {
+test('each drive loads a long conversational phrase bank', () => {
+  assert.ok(phrases.length >= 60, `only ${phrases.length} drive phrases`);
+  for (const drive of content.drives) {
+    assert.ok(drive.lines.length >= 50, `${drive.id} has ${drive.lines.length} lines`);
+    const linePhrases = drive.lines.map(id => content.drills.find(drill => drill.id === id)?.phrase).filter(Boolean);
+    assert.equal(linePhrases.length, drive.lines.length, drive.id);
+    assert.equal(new Set(linePhrases).size, linePhrases.length, drive.id);
+  }
+});
+
+test('a line that names a word is stitched from fragments of the coach voice, not a second voice', () => {
   const cue = CUE_LIBRARY.fry.variants[0];
   assert.deepEqual(planSpeech(`Arriving fell into fry. ${cue}`, has), [{ clip: '~arriving' }, { clip: '~fell into fry' }, { clip: cue }]);
+  const grouped = planSpeech(`Arriving and ready fell into fry. ${cue}`, has);
+  assert.ok(grouped.every(part => part.clip), JSON.stringify(grouped));
+  assert.equal(grouped.some(part => part.clip === '~and'), true);
   const words = [...new Set(phrases.flatMap(fragmentWords))];
   const problems = ISSUE_ORDER.flatMap(a => [problemPhrase([a]), ...ISSUE_ORDER.filter(b => b !== a).map(b => problemPhrase([a, b]))]);
   for (const word of words) {
@@ -65,7 +79,39 @@ test('the summary is stitched up to 199 phrases and falls back above that', () =
   assert.deepEqual(planSpeech('Zebra dropped.', has), [{ text: 'Zebra dropped.' }], 'an unknown word sends the whole part to one fallback voice');
 });
 
-test('all clips together stay under 4 MB', () => {
+test('command replies play entirely from coach-voice clips', () => {
+  const phrase = phrases[0];
+  const lines = [phrase, phrases[1] || phrase];
+  const replies = [];
+  const fresh = () => createCoachSession({ lines, now: 0 });
+  let session = fresh();
+  replies.push(session.command('next').say);
+  session = fresh();
+  replies.push(session.command('repeat').say);
+  session = fresh();
+  replies.push(session.command('pause').say);
+  replies.push(session.command('resume').say);
+  session = fresh();
+  replies.push(session.command('stop').say);
+  session = fresh();
+  replies.push(session.command('summary').say);
+  session = fresh();
+  replies.push(session.command('free').say);
+  session = fresh();
+  session.command('free');
+  replies.push(session.command('lines').say);
+  for (const say of replies) {
+    const plan = planSpeech(say, has);
+    assert.ok(plan.length > 0 && plan.every(part => part.clip), `a command reply would leave the coach voice: ${say} ${JSON.stringify(plan)}`);
+  }
+});
+
+test('clips are the one coach voice, and together stay under 16 MB', () => {
+  const meta = JSON.parse(readFileSync(new URL('../public/voice/voice.json', import.meta.url), 'utf8'));
+  assert.equal(meta.voice, COACH_VOICE);
+  assert.equal(meta.speed, COACH_VOICE_SPEED);
+  assert.equal(meta.rate, 24000);
+  assert.equal(meta.channels, 1);
   const total = Object.values(VOICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
-  assert.ok(total < 4 * 1024 * 1024, `clips total ${total} bytes`);
+  assert.ok(total < 16 * 1024 * 1024, `clips total ${total} bytes`);
 });

@@ -139,7 +139,14 @@ function validateCoach(entry) {
   if (!coach || typeof coach !== 'object' || Array.isArray(coach)) throw new HttpError(400, 'Invalid drive log.');
   if (!Number.isFinite(coach.minutes) || coach.minutes < 0 || coach.minutes > 120) throw new HttpError(400, 'Invalid drive log.');
   if (!['lines', 'free'].includes(coach.mode)) throw new HttpError(400, 'Invalid drive log.');
-  if (typeof coach.comfortKnown !== 'boolean' || typeof coach.comfortPaused !== 'boolean' || typeof coach.restSuggested !== 'boolean') throw new HttpError(400, 'Invalid drive log.');
+  const flag = value => {
+    if (value == null) return false;
+    if (typeof value !== 'boolean') throw new HttpError(400, 'Invalid drive log.');
+    return value;
+  };
+  const comfortKnown = flag(coach.comfortKnown);
+  const comfortPaused = flag(coach.comfortPaused);
+  const restSuggested = flag(coach.restSuggested);
   if (typeof coach.summary !== 'string' || coach.summary.length > 240) throw new HttpError(400, 'Invalid drive log.');
   if (!Array.isArray(coach.phrases) || coach.phrases.length > 30) throw new HttpError(400, 'Invalid drive log.');
   const phrases = coach.phrases.map(phrase => {
@@ -163,9 +170,9 @@ function validateCoach(entry) {
   return {
     minutes: coach.minutes,
     mode: coach.mode,
-    comfortKnown: coach.comfortKnown,
-    comfortPaused: coach.comfortPaused,
-    restSuggested: coach.restSuggested,
+    comfortKnown,
+    comfortPaused,
+    restSuggested,
     summary: coach.summary,
     phrases
   };
@@ -180,9 +187,9 @@ function validateDriveLog(driveLog) {
         typeof entry.routineId !== 'string' || entry.routineId.length > 40 ||
         ![20, 30, 40].includes(entry.plannedMinutes) ||
         !['yes', 'partly', 'no'].includes(entry.cueHeld)) throw new HttpError(400, 'Invalid drive log.');
-    const unrated = entry.kind === 'coach' && entry.coach?.comfortKnown === false;
     const rated = Number.isInteger(entry.comfort) && entry.comfort >= 1 && entry.comfort <= 5;
-    if (!(unrated ? entry.comfort == null || rated : rated)) throw new HttpError(400, 'Invalid drive log.');
+    const comfortOk = entry.kind === 'coach' ? entry.comfort == null || rated : rated;
+    if (!comfortOk) throw new HttpError(400, 'Invalid drive log.');
     if (entry.kind == null) {
       if (![0, 20, 30, 40].includes(entry.actualMinutes)) throw new HttpError(400, 'Invalid drive log.');
       return { id: entry.id, date: entry.date, routineId: entry.routineId, plannedMinutes: entry.plannedMinutes, actualMinutes: entry.actualMinutes, comfort: entry.comfort, cueHeld: entry.cueHeld };

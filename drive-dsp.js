@@ -564,7 +564,11 @@ function sustainedLowRun(voiced, reference) {
 export const TURN = {
   // A breathy vowel under moderate road noise only stays voiced for about three hops.
   minVoicedMs: 60,
+  // A finished phrase can end on a short quiet. A pause earlier than that, while
+  // the take is still short for the current prompt, stays open.
   endSilenceMs: 560,
+  holdSilenceMs: 1400,
+  phraseDoneRatio: 0.8,
   minTurnMs: 450,
   maxTurnSec: 12,
   snrCoachMin: 5.15,
@@ -598,6 +602,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
   let rawNoise = 0.004;
   let rawAmbient = 0.004;
   let turns = 0;
+  let expectMs = 0;
   const hopMs = (HOP / sampleRate) * 1000;
 
   function classifyHop(hopSamples) {
@@ -760,7 +765,13 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
           appendUtterance(raw);
           if (decision.voiced) quietMs = 0;
           else quietMs += hopMs;
-          if (quietMs >= TURN.endSilenceMs) finish('silence');
+          // A quiet breath in the middle of a line is not the end of the turn.
+          // Loud road noise still closes on the short silence, so a rumble is not
+          // glued into the take.
+          const pauseLike = rawRms < 0.11;
+          const stillOnPhrase = expectMs > 0 && totalVoicedHopMs < expectMs * TURN.phraseDoneRatio;
+          const limit = pauseLike && stillOnPhrase ? TURN.holdSilenceMs : TURN.endSilenceMs;
+          if (quietMs >= limit) finish('silence');
           else if (uttLen >= utterance.length - HOP) finish('max');
         }
       }
@@ -798,6 +809,9 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     },
     flush() {
       return finish('flush');
+    },
+    setExpectation(ms = 0) {
+      expectMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
     },
     stats() {
       return { turns, inSpeech, speaking, utteranceSamples: uttLen, bufferCap: utterance.length };

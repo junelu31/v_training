@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { analyzePcm, createTurnDetector, detectTurns, makeRoadNoise, mixAtSnr, synthesizeWords } from '../drive-dsp.js';
-import { classifyUtterance, composeFeedback, confusion, createCoachSession, matchCommand, profilePhrase, scoreFlags } from '../drive-coach.js';
+import { classifyUtterance, composeFeedback, confusion, createCoachSession, joinIssueWords, matchCommand, profilePhrase, scoreFlags } from '../drive-coach.js';
 import { CUE_LIBRARY, cueLine } from '../drive-cues.js';
 
 const goal = { pitch: [175, 225], brightness: [-8, -4] };
@@ -113,7 +114,7 @@ test('road noise alone never opens a turn, and a buried phrase is too noisy to n
   }
 });
 
-test('commands, comfort pause, rest, and the in-memory phrase cap', () => {
+test('commands and the in-memory phrase cap, with no comfort or rest nag', () => {
   let now = Date.parse('2026-10-22T12:00:00Z');
   const session = createCoachSession({ plannedMinutes: 40, routineId: 'week-3', lines: ['Hello there', 'One more line'], now, id: 'coach-test' });
   assert.equal(matchCommand('next'), 'next');
@@ -129,14 +130,23 @@ test('commands, comfort pause, rest, and the in-memory phrase cap', () => {
     session.noteAnalysis(classifyUtterance({ analysis, prompt: 'Hello there', goal, cursor: i }), { at: now });
   }
   assert.ok(session.status().phrases <= 24);
-  assert.equal(session.comfortReply('two', now).type, 'comfort-pause');
+  assert.equal(session.comfortReply, undefined);
   const later = createCoachSession({ lines: ['Again'], now, id: 'rest' });
   const rest = later.noteAnalysis(classifyUtterance({ analysis, prompt: 'Again', goal }), { at: now + 21 * 60000 });
-  assert.ok(rest.events.some(event => event.type === 'rest'));
+  assert.equal(rest.events.some(event => event.type === 'rest' || event.type === 'comfort-check'), false);
+  const early = createCoachSession({ lines: ['Again'], now, id: 'comfort' });
+  const check = early.noteAnalysis(classifyUtterance({ analysis, prompt: 'Again', goal }), { at: now + 5 * 60000 });
+  assert.equal(check.events.some(event => event.type === 'comfort-check' || event.type === 'rest'), false);
   const entry = later.logEntry();
   assert.equal(entry.kind, 'coach');
+  assert.equal(entry.comfort, null);
+  assert.equal(entry.coach.comfortKnown, undefined);
+  assert.equal(entry.coach.restSuggested, undefined);
   assert.ok(entry.actualMinutes >= 20 && entry.actualMinutes <= 22);
   assert.equal(entry.coach.phrases.length <= 30, true);
+  const source = readFileSync(new URL('../drive-coach.js', import.meta.url), 'utf8');
+  assert.equal(source.includes('Quick comfort check'), false);
+  assert.equal(source.includes('You have been at this a while'), false);
 });
 
 test('positive reinforcement changes after the same word improves', () => {
@@ -144,7 +154,83 @@ test('positive reinforcement changes after the same word improves', () => {
   const words = [{ text: 'please', voiced: 4, flags: [] }];
   const line = composeFeedback({ words, cursor: 1, cleared: [{ word: 'please', issue: 'drop' }] });
   assert.match(line.text, /please/i);
-  assert.match(line.text, /better|improved|held/i);
+  assert.match(line.text, /closer to how I say it|moved toward my voice|held/i);
+});
+
+test('the same issue names every heard word, then one cue', () => {
+  const words = [
+    { text: 'June', flags: [{ issue: 'drop', speak: true }, { issue: 'chesty', speak: true }] },
+    { text: 'please', flags: [{ issue: 'drop', speak: true }] },
+    { text: 'ready', heard: false, flags: [{ issue: 'drop', speak: true }] },
+    { text: 'window', flags: [{ issue: 'heavy', speak: true }] }
+  ];
+  const line = composeFeedback({ words, cursor: 0 });
+  assert.equal(line.issue, 'drop');
+  assert.equal(line.spoken, true);
+  assert.equal(line.text.startsWith('June and please dropped. '), true);
+  assert.equal(line.text.includes('ready'), false);
+  assert.equal(line.text.includes('window'), false);
+  assert.equal(line.text.includes('heavy'), false);
+  const sentences = line.text.split(/[.!?]/).map(part => part.trim()).filter(Boolean);
+  assert.equal(sentences.length, 2);
+  assert.equal(sentences[1], cueLine('drop', 0).replace(/[.!?]$/, ''));
+  const three = composeFeedback({
+    words: ['arriving', 'ready', 'morning'].map(text => ({ text, flags: [{ issue: 'fry', speak: true }] })),
+    cursor: 2
+  });
+  assert.equal(three.text.startsWith(`${joinIssueWords(['arriving', 'ready', 'morning'])} fell into fry. `), true);
+  assert.equal(three.text.split(/[.!?]/).filter(part => part.trim()).length, 2);
+});
+
+test('a short take does not name prompt words that were not said', () => {
+  const heardFrames = [
+    ...burst({ hz: 188, f2: 1400, tilt: -9, vtl: 16.5 }, 10, 2),
+    ...burst({ hz: 120, f2: 1000, tilt: -11, vtl: 17 }, 10, 2)
+  ];
+  const prompt = 'alpha bravo charlie delta echo foxtrot';
+  const completed = classifyUtterance({
+    analysis: { frames: heardFrames, snrDb: 18, voicedFraction: 0.7, tooNoisy: false },
+    prompt,
+    transcript: prompt,
+    goal
+  });
+  const partial = classifyUtterance({
+    analysis: { frames: heardFrames, snrDb: 18, voicedFraction: 0.7, tooNoisy: false },
+    prompt,
+    transcript: 'alpha bravo',
+    goal
+  });
+  for (const result of [completed, partial]) {
+    for (const word of result.words) assert.ok(['alpha', 'bravo'].includes(word.text), word.text);
+    assert.equal(/charlie|delta|echo|foxtrot/.test(result.feedback.text), false);
+  }
+  assert.ok(partial.words.length >= 1 && partial.words.length <= 2);
+});
+
+test('a mid-phrase pause does not end the turn while the prompt is unfinished', () => {
+  const words = [
+    { text: 'one', ms: 320, f0: 190, f1: 400, f2: 1900, seed: 3, gapMs: 40 },
+    { text: 'two', ms: 320, f0: 188, f1: 420, f2: 1850, seed: 4, gapMs: 700 },
+    { text: 'three', ms: 320, f0: 186, f1: 410, f2: 1800, seed: 5, gapMs: 40 },
+    { text: 'four', ms: 340, f0: 184, f1: 430, f2: 1760, seed: 6, gapMs: 40 }
+  ];
+  const speech = synthesizeWords(words).samples;
+  const tail = new Float32Array(Math.floor(16000 * 1.7));
+  const samples = new Float32Array(speech.length + tail.length);
+  samples.set(speech);
+  const push = detector => {
+    for (let offset = 0; offset < samples.length; offset += 1600) detector.push(samples.subarray(offset, offset + 1600));
+  };
+  const early = [];
+  const cut = createTurnDetector({ onTurn: turn => early.push(turn) });
+  push(cut);
+  const held = [];
+  const wait = createTurnDetector({ onTurn: turn => held.push(turn) });
+  wait.setExpectation(4000);
+  push(wait);
+  assert.ok(early.length >= 2, `a 700 ms pause closed ${early.length} turn(s) with no prompt`);
+  assert.equal(held.length, 1, `prompt still open, turns: ${held.length}`);
+  assert.ok(held[0].duration > 1.2, held[0].duration);
 });
 
 test('tts mute drops an open turn instead of scoring the coach voice', () => {

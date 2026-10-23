@@ -1,6 +1,5 @@
 import { median } from './drive-dsp.js';
-import { cueLine, fillWord, problemPhrase, ISSUE_ORDER } from './drive-cues.js';
-import { shouldPauseForComfort } from './client-logic.js';
+import { cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
 
 export { createDriveSession };
@@ -278,31 +277,50 @@ function spokenIssues(word) {
   return ISSUE_ORDER.filter(issue => word.flags.some(flag => flag.issue === issue && flag.speak));
 }
 
+/** "June and please", or "June, ready, and please". */
+export function joinIssueWords(texts) {
+  const words = texts.map(text => String(text || '').trim()).filter(Boolean);
+  if (words.length <= 1) return words[0] || '';
+  if (words.length === 2) return `${words[0]} and ${words[1]}`;
+  return `${words.slice(0, -1).join(', ')}, and ${words[words.length - 1]}`;
+}
+
 export function composeFeedback({ words = [], tooNoisy = false, previous = null, cursor = 0, cleared = [] } = {}) {
   if (tooNoisy) {
     return { text: cueLine('noisy', cursor), issue: 'noisy', word: '', cursor: cursor + 1, spoken: false };
   }
-  const candidates = [];
+  const groups = new Map();
   for (const word of words) {
+    if (word.heard === false) continue;
     const issues = spokenIssues(word);
-    if (issues.length) candidates.push({ word, issues });
+    if (!issues.length) continue;
+    const issue = issues[0];
+    if (!groups.has(issue)) groups.set(issue, []);
+    groups.get(issue).push(word);
   }
-  if (!candidates.length) {
-    const improved = cleared.find(item => item.word);
+  if (!groups.size) {
+    const improved = cleared.find(item => item.word && item.heard !== false);
     if (improved) {
       return { text: fillWord(IMPROVED(cursor), improved.word), issue: 'held', word: improved.word, cursor: cursor + 1, spoken: false };
     }
     return { text: '', issue: 'held', word: '', cursor: cursor + 1, spoken: false };
   }
-  candidates.sort((a, b) => ISSUE_ORDER.indexOf(a.issues[0]) - ISSUE_ORDER.indexOf(b.issues[0]));
-  const chosen = candidates[0];
-  const lead = chosen.issues.slice(0, 2);
-  const sentence = `${chosen.word.text} ${problemPhrase(lead)}. ${cueLine(lead[0], cursor)}`;
-  return { text: sentence, issue: lead[0], word: chosen.word.text, cursor: cursor + 1, spoken: true };
+  const issue = ISSUE_ORDER.find(item => groups.has(item));
+  const group = groups.get(issue);
+  const names = joinIssueWords(group.map(word => word.text));
+  const sentence = `${names} ${problemPhrase([issue])}. ${cueLine(issue, cursor)}`;
+  return {
+    text: sentence,
+    issue,
+    word: group[0].text,
+    words: group.map(word => word.text),
+    cursor: cursor + 1,
+    spoken: true
+  };
 }
 
 function IMPROVED(cursor) {
-  return ["'{word}' is better than last time.", "That '{word}' improved.", "'{word}' held this time."][Math.abs(cursor) % 3];
+  return IMPROVED_LINES[Math.abs(cursor) % IMPROVED_LINES.length];
 }
 
 export function parseEar(answers) {
@@ -395,11 +413,73 @@ function round(value) {
   return Number.isFinite(value) ? Math.round(value * 10) / 10 : null;
 }
 
-export function classifyUtterance({ analysis, prompt, goal, ear, previousWords = [], cursor = 0, timings = null }) {
+const FRAME_HOP_SEC = 0.02;
+
+function frameHopSec(frames) {
+  const times = frames.map(frame => frame.t).filter(Number.isFinite);
+  if (times.length < 2) return FRAME_HOP_SEC;
+  const gaps = [];
+  for (let index = 1; index < times.length; index++) {
+    const gap = times[index] - times[index - 1];
+    if (gap > 0.005 && gap < 0.08) gaps.push(gap);
+  }
+  if (!gaps.length) return FRAME_HOP_SEC;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)];
+}
+
+/**
+ * Prompt words this take can actually have produced. A cloud transcript drops
+ * any prompt word it did not hear. A short recording drops later prompt words
+ * even when the recognizer completes the sentence.
+ */
+export function heardPrompt(prompt, { transcript = '', frames = [] } = {}) {
+  const tokens = tokenizePrompt(prompt);
+  if (!tokens.length) return '';
+  const said = tokenizePrompt(transcript);
+  const voiced = frames.filter(frame => frame.voiced || frame.unstable).length;
+  const voicedMs = voiced * frameHopSec(frames) * 1000;
+  const limit = voiced ? Math.max(1, Math.floor(voicedMs / 150)) : tokens.length;
+  let kept = tokens;
+  if (said.length) {
+    const lowered = said.map(word => word.toLowerCase());
+    const matched = [];
+    let cursor = 0;
+    for (const token of tokens) {
+      const key = token.toLowerCase();
+      let at = -1;
+      for (let index = cursor; index < lowered.length; index++) {
+        if (lowered[index] === key) { at = index; break; }
+      }
+      if (at < 0) continue;
+      matched.push(token);
+      cursor = at + 1;
+    }
+    if (!matched.length) return '';
+    kept = matched.length < tokens.length ? matched : tokens;
+  }
+  if (voiced && limit < kept.length) kept = kept.slice(0, limit);
+  return kept.join(' ');
+}
+
+/** Voiced time a finished reading of this prompt usually takes, for the turn detector. */
+export function expectedVoicedMs(prompt) {
+  const count = tokenizePrompt(prompt).length;
+  if (!count) return 0;
+  return Math.min(9000, count * 170 + 120);
+}
+
+export function classifyUtterance({ analysis, prompt, goal, ear, previousWords = [], cursor = 0, timings = null, transcript = '' } = {}) {
   const tooNoisy = analysis && Object.prototype.hasOwnProperty.call(analysis, 'tooNoisy')
     ? !!analysis.tooNoisy
     : !!((Number.isFinite(analysis?.snrDb) && analysis.snrDb < 11) || analysis?.voicedFraction < 0.12);
-  let words = measureWords(analysis, prompt, goal, timings);
+  const frames = analysis?.frames || [];
+  const explicitTimings = Array.isArray(timings) && timings.length;
+  const usable = explicitTimings ? prompt : heardPrompt(prompt, { transcript, frames });
+  let words = measureWords(analysis, usable, goal, explicitTimings ? timings : null);
+  if (!explicitTimings) {
+    words = words.filter(word => word.voiced >= 2 && Number.isFinite(word.end) && Number.isFinite(word.start) && word.end - word.start >= 0.09);
+  }
   words = applyEar(words, ear, { tooNoisy });
   if (tooNoisy) words = words.map(word => ({ ...word, flags: word.flags.map(flag => ({ ...flag, speak: false })) }));
   const cleared = [];
@@ -418,20 +498,124 @@ export function classifyUtterance({ analysis, prompt, goal, ear, previousWords =
   return { tooNoisy, words, feedback, profile, confident, cleared };
 }
 
-const COMMANDS = [
-  { name: 'next', pattern: /^(next|skip)$/ },
-  { name: 'repeat', pattern: /^(repeat|again)$/ },
-  { name: 'pause', pattern: /^pause$/ },
-  { name: 'stop', pattern: /^(stop|finish|done)$/ },
-  { name: 'resume', pattern: /^(start|resume|continue)$/ },
-  { name: 'summary', pattern: /^(how am i doing|how am i doing\?)$/ },
-  { name: 'free', pattern: /^(free talk|free)$/ },
-  { name: 'lines', pattern: /^(lines|prompts|back to lines)$/ }
+// Whole utterances only. A longer practice sentence is not a command, even if it
+// contains one of these words. Fillers are removed before the lookup.
+const COACH_COMMANDS = [
+  { name: 'next', phrases: [
+    'next', 'skip', 'next phrase', 'next one', 'next line',
+    'skip this', 'skip it', 'skip this one', 'skip this phrase', 'skip this line',
+    'skip the phrase', 'skip the line', 'skip ahead',
+    'go next', 'go to the next', 'go to the next one', 'go to the next phrase', 'go to the next line',
+    'do next', 'do the next', 'do the next one', 'do the next phrase', 'do the next line',
+    'on to the next', 'on to the next one', 'on to the next phrase',
+    'onto the next', 'onto the next one', 'onto the next phrase',
+    'move on', 'move on to the next', 'move on to the next one', 'move on to the next phrase',
+    'give me the next', 'give me the next one', 'give me the next phrase', 'give me the next line'
+  ]},
+  { name: 'repeat', phrases: [
+    'repeat', 'again', 'repeat that', 'repeat it', 'repeat this',
+    'repeat the phrase', 'repeat the line', 'repeat the prompt',
+    'say it again', 'say that again', 'say this again',
+    'say it one more time', 'say that one more time', 'say this one more time',
+    'say the phrase again', 'say the line again',
+    'one more time', 'once more', 'one more',
+    'do it again', 'do that again', 'try again', 'try it again', 'try that again',
+    'try that one more time', 'come again', 'read it again', 'say that once more'
+  ]},
+  { name: 'pause', phrases: [
+    'pause', 'pause the coach', 'pause coach', 'hold on', 'hang on',
+    'wait', 'wait a second', 'wait a minute', 'wait a moment',
+    'pause for a second', 'pause for a minute', 'pause for a moment',
+    'take a break', 'give me a second', 'give me a minute'
+  ]},
+  { name: 'stop', phrases: [
+    'stop', 'finish', 'done', 'stop the coach', 'stop coach', 'stop the session',
+    'end the coach', 'end the session', 'finish the coach', 'finish up', 'stop for now',
+    'save and stop', "i'm done", 'i am done', 'im done',
+    "i'm finished", 'i am finished', 'im finished',
+    "i'm done for now", 'i am done for now', 'done for now',
+    "that's enough", 'thats enough', 'that is enough',
+    "we're done", 'we are done', 'were done', "i'm stopping"
+  ]},
+  { name: 'resume', phrases: [
+    'resume', 'start', 'continue', 'keep going', 'start again',
+    'resume the coach', 'continue the coach', 'start the coach', 'unpause',
+    "i'm ready", 'i am ready', 'im ready', 'ready',
+    "let's go", 'lets go', 'go ahead', "i'm back", 'i am back', 'im back'
+  ]},
+  { name: 'summary', phrases: [
+    'how am i doing', 'how am i doing so far', 'how am i doing today', 'how am i',
+    "how's it going", 'hows it going', 'how is it going', "how's it going so far", 'hows it going so far',
+    'how did i do', 'how did that go',
+    "what's my progress", 'whats my progress', 'what is my progress', 'how is my voice'
+  ]},
+  { name: 'free', phrases: [
+    'free talk', 'free', 'free talk mode', "let's talk", 'lets talk',
+    "let's just talk", 'lets just talk', 'just talk', 'open talk'
+  ]},
+  { name: 'lines', phrases: [
+    'lines', 'prompts', 'back to lines', 'back to the lines',
+    'back to prompts', 'back to the prompts', 'back to the phrases', 'back to phrases',
+    'line mode', 'practice lines'
+  ]}
 ];
 
-export function matchCommand(text, { paused = false } = {}) {
-  const normalized = String(text || '').toLowerCase().replace(/[^a-z\s?]/g, ' ').replace(/\s+/g, ' ').trim();
-  const found = COMMANDS.find(command => command.pattern.test(normalized));
+const COMMAND_PHRASE_SETS = COACH_COMMANDS.map(command => ({ name: command.name, phrases: new Set(command.phrases) }));
+const LEADING_FILLER = new Set(['okay', 'ok', 'um', 'uh', 'uhh', 'umm', 'er', 'ah', 'hmm', 'mm', 'please', 'coach', 'hey', 'so', 'well', 'now', 'yeah', 'yep', 'just', 'like', 'alright', 'right']);
+const TRAILING_FILLER = new Set(['okay', 'ok', 'um', 'uh', 'uhh', 'umm', 'er', 'ah', 'hmm', 'mm', 'please', 'hey', 'so', 'well', 'now', 'yeah', 'yep', 'just', 'like', 'alright', 'right']);
+const POLITE_PREFIX = /^(?:can you|could you|would you|will you|can we|could we|would we|let's|lets|let us)\s+/;
+
+export function normalizeCommandText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[^a-z'\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function commandCandidates(normalized) {
+  const found = new Set();
+  let words = normalized.split(' ').filter(Boolean);
+  for (let step = 0; step < 8 && words.length; step += 1) {
+    found.add(words.join(' '));
+    let next = words.slice();
+    while (next.length && LEADING_FILLER.has(next[0])) next.shift();
+    while (next.length && TRAILING_FILLER.has(next[next.length - 1])) next.pop();
+    const stripped = next.join(' ').replace(POLITE_PREFIX, '');
+    next = stripped ? stripped.split(' ') : [];
+    if (next.join(' ') === words.join(' ')) break;
+    words = next;
+  }
+  found.delete('');
+  return found;
+}
+
+function isPromptReading(said, prompt) {
+  const expected = normalizeCommandText(prompt);
+  if (!said || !expected) return false;
+  if (said === expected) return true;
+  const saidWords = said.split(' ').filter(Boolean);
+  const expectedWords = expected.split(' ').filter(Boolean);
+  if (expectedWords.length >= 3 && expected.includes(said) && saidWords.length >= 4) return true;
+  if (saidWords.length >= 4 && said.includes(expected)) return true;
+  if (saidWords.length < 4 || expectedWords.length < 4) return false;
+  const expectedSet = new Set(expectedWords);
+  const overlap = saidWords.filter(word => expectedSet.has(word)).length;
+  return overlap / saidWords.length >= 0.8 && overlap / expectedWords.length >= 0.6;
+}
+
+/**
+ * Matches one spoken command. Fillers such as "okay", "um", "please", and "coach"
+ * can sit around it, and punctuation or casing from the transcript does not matter.
+ * The whole utterance has to be the command. Reading the current prompt aloud is
+ * practice, even when that line contains "next" or "stop".
+ */
+export function matchCommand(text, { paused = false, prompt = '' } = {}) {
+  const normalized = normalizeCommandText(text);
+  if (!normalized || isPromptReading(normalized, prompt)) return null;
+  const options = commandCandidates(normalized);
+  const found = COMMAND_PHRASE_SETS.find(command => [...options].some(option => command.phrases.has(option)));
   if (!found) return null;
   if (found.name === 'resume' && !paused) return null;
   return found.name;
@@ -442,17 +626,17 @@ export function coachMinutes(elapsedMs) {
   return clamp(Math.round(elapsedMs / 60000), 1, 120);
 }
 
-/** Spoken when the coach starts or resumes. The driver cannot read the screen, so the line is read aloud. */
+/** Spoken when the coach starts or resumes. The driver hears the target voice, then matches it. */
 export function openingLine(prompt, { resumed = false } = {}) {
   const lead = resumed ? 'The coach is listening again.' : 'Drive coach is on.';
-  return prompt ? `${lead} Say this: ${prompt}` : `${lead} Talk whenever you are ready.`;
+  return prompt ? `${lead} Match how I say this: ${prompt}` : `${lead} Talk in this voice whenever you are ready.`;
 }
 
-/** Spoken after a judged phrase in line mode: the next line after a clear take, the same line after a cue. */
+/** Spoken after a judged phrase in line mode: the same line after a cue, the next line after a match. */
 export function followUpLine({ prompt, coached = false, tooNoisy = false, next = '' } = {}) {
   if (tooNoisy || !prompt) return '';
-  if (coached) return `Try it again: ${prompt}`;
-  return next ? `That was clear. Next: ${next}` : '';
+  if (coached) return `Try it again, and match how I say it: ${prompt}`;
+  return next ? `That matched. Next: ${next}` : '';
 }
 
 export function createCoachSession({
@@ -468,17 +652,11 @@ export function createCoachSession({
   let paused = false;
   let stopped = false;
   let cursor = 0;
-  let comfort = null;
-  let comfortKnown = false;
-  let comfortPaused = false;
-  let restSuggested = false;
-  let fryStrainStreak = 0;
   let cleanPhrases = 0;
   let coachedPhrases = 0;
   let phraseCount = 0;
   let cueHeld = 'partly';
   let summary = '';
-  let lastComfortAt = now;
   let startedAt = now;
   let clock = now;
   const phrases = [];
@@ -524,15 +702,12 @@ export function createCoachSession({
       routineId,
       plannedMinutes: [20, 30, 40].includes(plannedMinutes) ? plannedMinutes : 30,
       actualMinutes: Math.max(minutes, minutes === 0 ? 0 : minutes),
-      comfort: comfortKnown ? comfort : null,
+      comfort: null,
       cueHeld,
       kind: 'coach',
       coach: {
         minutes,
         mode,
-        comfortKnown,
-        comfortPaused,
-        restSuggested,
         summary: summary.slice(0, 240),
         phrases: saved
       }
@@ -543,7 +718,7 @@ export function createCoachSession({
     id: sessionId,
     prompt,
     status() {
-      return { paused, stopped, mode, lineIndex, cursor, comfort, comfortKnown, restSuggested, phraseCount, phrases: phrases.length };
+      return { paused, stopped, mode, lineIndex, cursor, phraseCount, phrases: phrases.length };
     },
     noteAnalysis(result, { transcript = '', at = Date.now() } = {}) {
       clock = at;
@@ -555,8 +730,6 @@ export function createCoachSession({
       }
       phraseCount += 1;
       coachedPhrases += result.feedback?.spoken ? 1 : 0;
-      const strainy = result.confident?.some(flag => flag.issue === 'strain' || flag.issue === 'fry');
-      fryStrainStreak = strainy ? fryStrainStreak + 1 : 0;
       if (!result.feedback?.spoken && !result.tooNoisy) cleanPhrases += 1;
       recomputeCue();
       cursor = result.feedback?.cursor ?? cursor + 1;
@@ -573,16 +746,7 @@ export function createCoachSession({
       };
       remember(entry);
       summary = spokenSummary();
-      const elapsedMin = (at - startedAt) / 60000;
       const events = [{ type: 'feedback', text: entry.feedback, entry }];
-      if (at - lastComfortAt >= 4 * 60000) {
-        lastComfortAt = at;
-        events.push({ type: 'comfort-check', text: 'Quick comfort check. Say a number from one to five.' });
-      }
-      if (!restSuggested && (elapsedMin >= 20 || fryStrainStreak >= 3)) {
-        restSuggested = true;
-        events.push({ type: 'rest', text: 'You have been at this a while. A short rest would be kind. Say stop if you want to save and pause.' });
-      }
       if (phraseCount % 4 === 0) {
         pendingSaves.push(logEntry(at));
         if (pendingSaves.length > 4) pendingSaves.splice(0, pendingSaves.length - 4);
@@ -596,7 +760,7 @@ export function createCoachSession({
     },
     hear(text, at = Date.now()) {
       clock = at;
-      const command = matchCommand(text, { paused });
+      const command = matchCommand(text, { paused, prompt: prompt() });
       if (!command) return { type: 'speech', text };
       return this.command(command, at);
     },
@@ -633,22 +797,6 @@ export function createCoachSession({
         return { type: 'lines', say: prompt() ? `Back to lines. ${prompt()}` : 'Back to lines.' };
       }
       return { type: 'speech' };
-    },
-    comfortReply(text, at = Date.now()) {
-      const match = String(text || '').toLowerCase().match(/\b(one|two|three|four|five|[1-5])\b/);
-      if (!match) return null;
-      const map = { one: 1, two: 2, three: 3, four: 4, five: 5 };
-      comfort = map[match[1]] || Number(match[1]);
-      comfortKnown = true;
-      if (shouldPauseForComfort(comfort)) {
-        comfortPaused = true;
-        stopped = true;
-        paused = true;
-        const entry = logEntry(at);
-        pendingSaves.push(entry);
-        return { type: 'comfort-pause', say: 'That is a low comfort score, so I am stopping here. Rest your voice.', entry };
-      }
-      return { type: 'comfort', say: 'Thank you. Keep it easy.' };
     },
     interrupt(reason = 'audio') {
       paused = true;
