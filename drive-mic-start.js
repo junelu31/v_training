@@ -41,6 +41,32 @@ export function onContextState({ state, covered, hidden, stopped, userPaused, pa
   return 'ignore';
 }
 
+/**
+ * iPhone Safari's AudioWorklet mic input stays silent: the stream is stereo,
+ * channel 0 is empty, and forcing the source to explicit mono yields silence.
+ * A ScriptProcessor connected straight to the destination still receives the mic.
+ */
+export function needsDirectScriptCapture(userAgent = '', platform = '', touchPoints = 0) {
+  if (/iPad|iPhone|iPod/.test(userAgent)) return true;
+  return platform === 'MacIntel' && touchPoints > 1;
+}
+
+/** Downmix every channel. Reading only channel 0 drops the iPhone mic. */
+export function mixChannels(channels) {
+  const list = (channels || []).filter(channel => channel && channel.length);
+  if (!list.length) return new Float32Array(0);
+  const length = list[0].length;
+  const mix = new Float32Array(length);
+  for (const channel of list) {
+    const n = Math.min(length, channel.length);
+    for (let i = 0; i < n; i++) mix[i] += channel[i];
+  }
+  if (list.length === 1) return mix;
+  const scale = 1 / list.length;
+  for (let i = 0; i < length; i++) mix[i] *= scale;
+  return mix;
+}
+
 /** True once a non-running context has stayed down long enough to be a real cut. */
 export function interruptionHeld(elapsedMs, limitMs = PLAYBACK_CUT_MS) {
   return elapsedMs >= limitMs;
