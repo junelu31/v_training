@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createCoachSession, matchCommand } from '../drive-coach.js';
+import { createCoachSession, matchCommand, matchVoiceRequest } from '../drive-coach.js';
+import { COACH_VOICE, PRACTICE_VOICE } from '../drive-voice.js';
 import { planCoachTurn } from '../drive-ui.js';
 import { SESSION_LINES } from '../drive-session.js';
 
@@ -114,6 +115,25 @@ test('a command skips phrase feedback and only speaks its short reply', () => {
   assert.equal(done.say, 'Stopping. I saved this drive.');
   assert.equal(stopping.status().paused, true);
   assert.equal(stopping.status().stopped, true);
+});
+
+test('practice voice and main voice switch the coach and leave the line alone', () => {
+  assert.equal(matchVoiceRequest('main voice'), COACH_VOICE);
+  assert.equal(matchVoiceRequest('Main voice.'), COACH_VOICE);
+  assert.equal(matchVoiceRequest('okay, back to river'), COACH_VOICE);
+  assert.equal(matchVoiceRequest('practice voice'), PRACTICE_VOICE);
+  assert.equal(matchVoiceRequest('easier voice please'), PRACTICE_VOICE);
+  assert.equal(matchVoiceRequest('I need the main voice later today', { prompt: lines[0] }), null);
+  assert.equal(matchCommand('main voice'), null);
+  const session = createCoachSession({ lines, now: 0 });
+  const turn = { tooNoisy: false, sampleRate: 16000, samples: new Float32Array(1600), hopVoicedMs: 800, frames: [] };
+  const plan = planCoachTurn({ session, turn, heard: 'main voice', at: 1000, voice: PRACTICE_VOICE });
+  assert.equal(plan.type, 'voice');
+  assert.equal(plan.voice, COACH_VOICE);
+  assert.match(plan.say, /^Back to River\./);
+  assert.equal(plan.feedbackText, '');
+  assert.equal(session.prompt(), lines[0]);
+  assert.equal(session.status().phraseCount, 0);
 });
 
 test('a failed transcript coaches the take and does not invent a command', () => {

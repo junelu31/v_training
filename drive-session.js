@@ -14,6 +14,21 @@ export const SESSION_LINES = {
   'too-noisy': 'This one is too noisy to coach.'
 };
 
+// Whole-take lines for the temporary practice voice. Higher and lighter than River.
+export const PRACTICE_SESSION_LINES = {
+  'pitch-low': 'Hum the next word up in the lighter part of your voice, and keep it where I say it.',
+  'pitch-drop-end': 'Lift the end of the word and keep it light, the way I finish it.',
+  'vocal-fry': 'Keep a little air moving through the last word, and leave the end light and clear, the way mine is.',
+  'resonance-dark': 'Lift the tongue toward the ridge behind your top teeth, so the vowel sits as forward as mine.',
+  breathiness: 'Use a little less air so the tone stays light and clear, the way mine does.',
+  'too-noisy': 'This one is too noisy to coach.'
+};
+
+export function sessionLine(cueId, voice = 'af_river') {
+  const lines = voice === 'af_bella' ? PRACTICE_SESSION_LINES : SESSION_LINES;
+  return lines[cueId] || '';
+}
+
 function median(values) {
   const finite = values.filter(Number.isFinite);
   if (!finite.length) return NaN;
@@ -75,7 +90,7 @@ function pitchOf(hzs) {
   return median(hzs);
 }
 
-export function describeTake(samples, sampleRate = 16000) {
+export function describeTake(samples, sampleRate = 16000, voice = 'af_river') {
   const analysis = analyzePcm(samples, sampleRate, { octave: true });
   const voiced = analysis.frames.filter(frame => frame.voiced && Number.isFinite(frame.hz));
   const hzs = voiced.map(frame => frame.hz);
@@ -138,7 +153,7 @@ export function describeTake(samples, sampleRate = 16000) {
   return {
     profile: cueId === 'too-noisy' ? null : profile,
     cueId,
-    text: cueId ? SESSION_LINES[cueId] : '',
+    text: cueId ? sessionLine(cueId, voice) : '',
     tooNoisy: cueId === 'too-noisy',
     f0,
     f2: formant
@@ -146,13 +161,13 @@ export function describeTake(samples, sampleRate = 16000) {
 }
 
 /** The line the driver hears. The suite and the live turn both call this on the trimmed turn. */
-export function readTurn(turn) {
+export function readTurn(turn, voice = 'af_river') {
   if (!turn) return { text: '', cueId: null, profile: null, tooNoisy: false };
   if (turn.tooNoisy || turn.reason === 'noise') {
-    return { text: SESSION_LINES['too-noisy'], cueId: 'too-noisy', profile: null, tooNoisy: true };
+    return { text: sessionLine('too-noisy', voice), cueId: 'too-noisy', profile: null, tooNoisy: true };
   }
   if (!turn.samples?.length) return { text: '', cueId: null, profile: null, tooNoisy: false };
-  return describeTake(turn.samples, turn.sampleRate || 16000);
+  return describeTake(turn.samples, turn.sampleRate || 16000, voice);
 }
 
 export async function createDriveSession(options = {}) {

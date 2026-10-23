@@ -1,9 +1,9 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
-import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, openingLine, parseEar } from './drive-coach.js';
+import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar } from './drive-coach.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
-import { planSpeech, voiceKey } from './drive-voice.js';
-import { VOICE_CLIPS } from './drive-voice-clips.js';
+import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, voiceKey, writeDriveVoice } from './drive-voice.js';
+import { PRACTICE_CLIPS, VOICE_CLIPS } from './drive-voice-clips.js';
 import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, mixChannels, needsDirectScriptCapture, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
 export { createDriveSession };
@@ -32,7 +32,7 @@ let stayAwake = null;
 let visibilityHandler = null;
 let workletReady = null;
 let awaitingPermission = false;
-let captureClock = null;
+let driveVoiceId = COACH_VOICE;
 const clipBuffers = new WeakMap();
 let judging = false;
 let speechToken = 0;
@@ -70,6 +70,7 @@ function show(line, sub = '') {
   overlay.hidden = false;
   el('coachLine').textContent = line;
   el('coachSub').textContent = sub;
+  paintDriveVoice();
   const guide = el('coachGuide');
   if (lastFeedback) guideRetired = true;
   if (guide) guide.hidden = guideRetired;
@@ -219,25 +220,7 @@ function armOutput(ctx) {
     source.connect(ctx.destination);
     source.start();
   } catch { /* the context is already unlocked, or it is closing */ }
-  // Started inside the tap. iOS stops the mic processor when this one-shot ends.
-  try { ensureCaptureClock(ctx); } catch { /* the context is closing */ }
   return pending;
-}
-
-// A looping silent buffer, started in the Start tap. On iPhone Safari the script
-// processor only keeps pulling the microphone while a source like this stays
-// connected to it. The opening prompt is a one-shot buffer, so without this the
-// processor stops when the prompt ends and her take never reaches the coach.
-function ensureCaptureClock(ctx) {
-  if (captureClock) return captureClock;
-  const rate = ctx.sampleRate || SAMPLE_RATE;
-  const buffer = ctx.createBuffer(1, Math.max(1, Math.round(rate * 0.02)), rate);
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  source.loop = true;
-  source.start();
-  captureClock = source;
-  return source;
 }
 
 function outputGain(ctx) {
@@ -265,9 +248,17 @@ async function suspendAudio() {
   if (audioContext && audioContext.state === 'running') await audioContext.suspend();
 }
 
+function clipBank() {
+  return driveVoiceId === PRACTICE_VOICE ? PRACTICE_CLIPS : VOICE_CLIPS;
+}
+
+function clipIn(bank, key) {
+  return bank[String(key).startsWith('~') ? key : voiceKey(key)];
+}
+
 // Fragment keys start with ~ and are already normalized.
 function clipUrl(key) {
-  return VOICE_CLIPS[key.startsWith('~') ? key : voiceKey(key)];
+  return clipIn(clipBank(), key);
 }
 
 function hasClip(key) {
@@ -501,9 +492,9 @@ function stopSpeech() {
   window.speechSynthesis?.cancel();
 }
 
-async function playPart(part, token) {
+async function playPart(part, token, bank) {
   if (part.clip) {
-    if (await playClip(clipUrl(part.clip), token)) return true;
+    if (await playClip(clipIn(bank, part.clip), token)) return true;
     return token === speechToken && speakDevice(part.clip.replace(/^~/, ''));
   }
   // A line that names a word or a count is built at runtime. Cloud speech uses a similar voice.
@@ -514,11 +505,11 @@ async function playPart(part, token) {
   return speakDevice(part.text);
 }
 
-async function runPlan(plan, token) {
+async function runPlan(plan, token, bank) {
   let ok = true;
   for (const part of plan) {
     if (token !== speechToken) return false;
-    ok = (await playPart(part, token)) && ok;
+    ok = (await playPart(part, token, bank)) && ok;
   }
   return ok && token === speechToken;
 }
@@ -535,20 +526,22 @@ function speak(text) {
   const token = speechToken;
   speaking = true;
   detector?.setSpeaking(true);
-  return finishSpeech(text, token);
+  // Keep this line on the voice that started it. A switch applies to the next line.
+  return finishSpeech(text, token, clipBank());
 }
 
-async function finishSpeech(text, token) {
+async function finishSpeech(text, token, bank) {
   try {
-    const plan = () => planSpeech(text, hasClip);
-    let ok = await runPlan(plan(), token);
+    const has = key => Boolean(clipIn(bank, key));
+    const plan = () => planSpeech(text, has);
+    let ok = await runPlan(plan(), token, bank);
     // The sheet can stop a source that had already started. Say the whole line once it can run.
     if (!ok && token === speechToken && !hiddenByPage && audioContext && audioContext.state !== 'closed') {
       try { activeSource?.stop(); } catch { /* already stopped */ }
       if (activeSource) activeSource = null;
       window.speechSynthesis?.cancel();
       if (audioContext.state !== 'running') await whenRunning(audioContext, token);
-      if (token === speechToken && audioContext.state === 'running') ok = await runPlan(plan(), token);
+      if (token === speechToken && audioContext.state === 'running') ok = await runPlan(plan(), token, bank);
     }
     await new Promise(resolve => setTimeout(resolve, SPEECH_TAIL_MS));
     return Boolean(ok && token === speechToken);
@@ -665,23 +658,24 @@ async function finishSession(entry) {
   if (overlay) overlay.hidden = true;
 }
 
-function spokenLine(turn, local) {
-  if (turn?.tooNoisy || turn?.reason === 'noise') return local?.feedback?.text || readTurn(turn).text || '';
+function spokenLine(turn, local, voice = COACH_VOICE) {
+  if (turn?.tooNoisy || turn?.reason === 'noise') return local?.feedback?.text || readTurn(turn, voice).text || '';
   if (local?.feedback?.spoken && local.feedback.text) return local.feedback.text;
-  const take = readTurn(turn);
+  const take = readTurn(turn, voice);
   if (take.text) return take.text;
   return '';
 }
 
-export function reviewLiveTurn(turn, coachSession, { goal, at = Date.now(), prompt } = {}) {
+export function reviewLiveTurn(turn, coachSession, { goal, at = Date.now(), prompt, voice = COACH_VOICE } = {}) {
   const linePrompt = prompt || coachSession.prompt();
   const local = classifyUtterance({
     analysis: turn,
     prompt: linePrompt,
     goal,
-    cursor: coachSession.status().cursor
+    cursor: coachSession.status().cursor,
+    voice
   });
-  const text = spokenLine(turn, local);
+  const text = spokenLine(turn, local, voice);
   // A blip or a one-beat tone is too short to judge. Say nothing and do not log it.
   if (!turn.tooNoisy && turn.hopVoicedMs < 200) return { ignored: true, events: [] };
   if (local.feedback) local.feedback = { ...local.feedback, text, spoken: Boolean(text) };
@@ -713,18 +707,36 @@ export function planCoachTurn({
   ear = null,
   goal = {},
   at = Date.now(),
-  statusHeld: noisyStatusHeld = false
+  statusHeld: noisyStatusHeld = false,
+  voice = COACH_VOICE
 }) {
   const prompt = coachSession.prompt();
+  const requested = matchVoiceRequest(heard, { prompt });
+  if (requested) {
+    return {
+      type: 'voice',
+      voice: requested,
+      feedbackText: '',
+      extra: [],
+      follow: '',
+      say: openingLine(prompt, { resumed: true, voice: requested, switched: requested === COACH_VOICE }),
+      heardLine: 'Heard you.',
+      statusHeld: noisyStatusHeld,
+      checkpoint: false,
+      showLine: prompt || 'Free talk whenever you are ready.',
+      showSub: ''
+    };
+  }
   const judged = classifyUtterance({
     analysis: turn,
     prompt,
     transcript: heard,
     goal,
     ear,
-    cursor: coachSession.status().cursor
+    cursor: coachSession.status().cursor,
+    voice
   });
-  const localText = spokenLine(turn, judged);
+  const localText = spokenLine(turn, judged, voice);
   const command = matchCommand(heard, { paused: coachSession.status().paused, prompt });
   if (command) {
     const result = coachSession.command(command, at);
@@ -769,7 +781,7 @@ export function planCoachTurn({
   const coached = Boolean(judged.feedback?.spoken);
   const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
   const next = !coached && !tooNoisy ? coachSession.advance() : '';
-  const follow = followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next });
+  const follow = followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next, voice });
   return {
     type: 'practice',
     feedbackText,
@@ -799,8 +811,15 @@ async function judgeTurn(turn) {
     ear: cloud?.ear ? parseEar(cloud.ear) : null,
     goal: savedDeps.getGoal(),
     at: clock ? clock() : Date.now(),
-    statusHeld
+    statusHeld,
+    voice: driveVoiceId
   });
+  if (plan.type === 'voice') {
+    selectDriveVoice(plan.voice, { announce: false });
+    show(plan.showLine || session.prompt() || 'Free talk whenever you are ready.', plan.say);
+    if (plan.say) await speak(plan.say);
+    return;
+  }
   if (plan.type === 'command') {
     const result = plan.result;
     if (result.type === 'pause') userPaused = true;
@@ -869,9 +888,7 @@ function attachScriptCapture(ctx, generation, { direct }) {
     }
   };
   sourceNode.connect(processor);
-  // iOS only runs this callback when the processor's output is the context destination,
-  // and only while a looping source is still connected. The prompt is not that source.
-  if (direct) ensureCaptureClock(ctx).connect(processor);
+  // iOS only runs this callback when the processor's output is the context destination.
   processor.connect(direct ? ctx.destination : outputGain(ctx));
 }
 
@@ -1012,16 +1029,85 @@ async function onVisibility() {
   }
 }
 
+function loadDriveVoice() {
+  try {
+    driveVoiceId = readDriveVoice(globalThis.localStorage);
+  } catch {
+    driveVoiceId = COACH_VOICE;
+  }
+}
+
+function paintDriveVoice() {
+  const voice = DRIVE_VOICES[driveVoiceId] || DRIVE_VOICES[COACH_VOICE];
+  const note = el('driveVoiceNote');
+  if (note) note.textContent = voice.note;
+  const kicker = el('coachKicker');
+  if (kicker) kicker.textContent = voice.kicker;
+  const switchButton = el('coachVoiceSwitch');
+  if (switchButton) switchButton.textContent = voice.switchTo;
+  const box = el('driveVoices');
+  if (!box || typeof box.querySelectorAll !== 'function') return;
+  for (const button of box.querySelectorAll('[data-drive-voice]')) {
+    const on = button.dataset.driveVoice === driveVoiceId;
+    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    button.classList.toggle('active', on);
+  }
+}
+
+function bindDriveVoiceControls() {
+  const box = el('driveVoices');
+  if (box && typeof box.querySelectorAll === 'function' && !box.dataset.bound) {
+    box.innerHTML = DRIVE_VOICE_ORDER.map(id => {
+      const voice = DRIVE_VOICES[id];
+      return `<button type="button" data-drive-voice="${voice.id}"><b>${voice.button}</b><small>${voice.detail}</small></button>`;
+    }).join('');
+    box.dataset.bound = '1';
+    for (const button of box.querySelectorAll('[data-drive-voice]')) {
+      button.onclick = () => selectDriveVoice(button.dataset.driveVoice, { announce: true });
+    }
+  }
+  const switchButton = el('coachVoiceSwitch');
+  if (switchButton && !switchButton.dataset?.bound) {
+    switchButton.onclick = () => {
+      selectDriveVoice(driveVoiceId === PRACTICE_VOICE ? COACH_VOICE : PRACTICE_VOICE, { announce: true });
+    };
+    if (switchButton.dataset) switchButton.dataset.bound = '1';
+  }
+}
+
+function selectDriveVoice(id, { announce = false } = {}) {
+  const next = id === PRACTICE_VOICE ? PRACTICE_VOICE : COACH_VOICE;
+  const changed = next !== driveVoiceId;
+  try {
+    driveVoiceId = writeDriveVoice(globalThis.localStorage, next);
+  } catch {
+    driveVoiceId = next;
+  }
+  paintDriveVoice();
+  if (!announce || !changed || !session || session.status().stopped || hiddenByPage) return;
+  const line = openingLine(session.prompt(), {
+    resumed: true,
+    voice: driveVoiceId,
+    switched: driveVoiceId === COACH_VOICE
+  });
+  // Keep the phrase as the large line. The announcement is spoken and shown under it.
+  show(session.prompt() || 'Free talk whenever you are ready.', line);
+  speak(line);
+}
+
 export function mountDriveCoach(deps) {
   savedDeps = deps;
   fileTest = new URLSearchParams(location.search).has('coachTest');
   el('coachTestRow').hidden = !fileTest;
+  loadDriveVoice();
+  bindDriveVoiceControls();
+  paintDriveVoice();
   const clicked = () => {
     const resumed = Boolean(session && !session.status().stopped);
     ensureSession();
     // A previous denial left the coach paused. This tap is the new start.
     userPaused = false;
-    const opening = openingLine(session.prompt(), { resumed });
+    const opening = openingLine(session.prompt(), { resumed, voice: driveVoiceId });
     const ctx = ensureContext();
     // Cover the sheet before it exists. The statechange it causes must not pause the coach.
     starting = true;
