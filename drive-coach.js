@@ -37,9 +37,7 @@ export function tokenizePrompt(prompt) {
     .filter(Boolean);
 }
 
-function finiteMedian(values) {
-  return median(values.filter(Number.isFinite));
-}
+const finiteMedian = median;
 
 function voicedSpan(frames) {
   let first = frames.findIndex(frame => frame.voiced || frame.unstable);

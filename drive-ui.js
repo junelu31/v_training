@@ -1,8 +1,9 @@
-import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
+import { SAMPLE_RATE, createTurnDetector, encodeWav, resampleLinear } from './drive-dsp.js';
 import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, openingLine, parseEar } from './drive-coach.js';
-import { createDriveSession, readTurn } from './drive-session.js';
+import { createDriveSession, readTurn, SESSION_LINES } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
-import { planSpeech, voiceKey } from './drive-voice.js';
+import { COACH_LINES, LEAD_LINES, planSpeech, voiceKey } from './drive-voice.js';
+import { CUE_LIBRARY } from './drive-cues.js';
 import { VOICE_CLIPS } from './drive-voice-clips.js';
 import { afterMicRequest, micFailureCopy, onContextState, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
@@ -27,12 +28,13 @@ let userPaused = false;
 let hiddenByPage = false;
 let contextBound = false;
 let micGeneration = 0;
-let captureScratch = new Float32Array(0);
 let stayAwake = null;
 let visibilityHandler = null;
 let workletReady = null;
 let awaitingPermission = false;
 const clipBuffers = new WeakMap();
+const clipBytes = new Map();
+let expectationPrompt = null;
 let judging = false;
 let speechToken = 0;
 const SPEECH_TAIL_MS = 250;
@@ -230,6 +232,20 @@ function hasClip(key) {
 // Clips play through the AudioContext unlocked by the Start tap. An HTML audio
 // element is paused by the mic permission sheet and does not resume on its own,
 // and a later play() is blocked once that tap's activation is gone.
+function loadClipBytes(url) {
+  const existing = clipBytes.get(url);
+  if (existing) return existing;
+  const pending = fetch(url).then(response => {
+    if (!response.ok) throw new Error('missing clip');
+    return response.arrayBuffer();
+  });
+  clipBytes.set(url, pending);
+  pending.catch(() => {
+    if (clipBytes.get(url) === pending) clipBytes.delete(url);
+  });
+  return pending;
+}
+
 function bufferFor(ctx, url) {
   let cache = clipBuffers.get(ctx);
   if (!cache) {
@@ -238,9 +254,7 @@ function bufferFor(ctx, url) {
   }
   const existing = cache.get(url);
   if (existing) return existing;
-  const pending = fetch(url).then(async response => {
-    if (!response.ok) throw new Error('missing clip');
-    const bytes = await response.arrayBuffer();
+  const pending = loadClipBytes(url).then(bytes => {
     // decodeAudioData detaches the buffer it is given.
     return ctx.decodeAudioData(bytes.slice(0));
   }).catch(error => {
@@ -249,6 +263,31 @@ function bufferFor(ctx, url) {
   });
   cache.set(url, pending);
   return pending;
+}
+
+function prefetchText(text) {
+  for (const part of planSpeech(text || '', hasClip)) {
+    if (!part.clip) continue;
+    const url = clipUrl(part.clip);
+    if (url) loadClipBytes(url);
+  }
+}
+
+function prefetchUpcoming() {
+  if (!session || session.status().mode === 'free') return;
+  const lines = savedDeps?.getLines?.() || [];
+  if (!lines.length) return;
+  const index = session.status().lineIndex;
+  prefetchText(lines[(index + 1) % lines.length] || '');
+}
+
+function prefetchCoachAudio() {
+  const cues = Object.values(CUE_LIBRARY).flatMap(entry => entry.variants);
+  for (const line of [...cues, ...COACH_LINES, ...LEAD_LINES, ...Object.values(SESSION_LINES)]) prefetchText(line);
+  const lines = savedDeps?.getLines?.() || [];
+  prefetchText(openingLine(lines[0] || '', { resumed: false }));
+  prefetchText(openingLine(lines[0] || '', { resumed: true }));
+  prefetchText(lines[1] || '');
 }
 
 function whenRunning(ctx, token) {
@@ -473,31 +512,14 @@ async function cloudSpeech(text) {
   } catch { return null; }
 }
 
+function bytesToBase64(bytes) {
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += 0x8000) parts.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)));
+  return btoa(parts.join(''));
+}
+
 function wavBase64(samples, sampleRate) {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
-  const view = new DataView(buffer);
-  const write = (offset, text) => { for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i)); };
-  write(0, 'RIFF');
-  view.setUint32(4, 36 + samples.length * 2, true);
-  write(8, 'WAVE');
-  write(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  write(36, 'data');
-  view.setUint32(40, samples.length * 2, true);
-  for (let i = 0; i < samples.length; i++) {
-    const clamped = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(44 + i * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
-  }
-  let binary = '';
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
+  return bytesToBase64(encodeWav(samples, sampleRate));
 }
 
 async function cloudTurn(samples, sampleRate) {
@@ -670,6 +692,8 @@ export function planCoachTurn({
 async function judgeTurn(turn) {
   const prompt = session.prompt();
   showHeard('Heard you.');
+  // The next phrase downloads while the transcript is in flight.
+  prefetchUpcoming();
   // Wait for the transcript before any phrase line. Otherwise "next phrase" is
   // coached out loud, and the command reply only starts after that finishes.
   const cloud = await cloudTurn(turn.samples, turn.sampleRate);
@@ -683,6 +707,10 @@ async function judgeTurn(turn) {
     at: clock ? clock() : Date.now(),
     statusHeld
   });
+  prefetchText(plan.say);
+  prefetchText(plan.feedbackText);
+  for (const line of plan.extra || []) prefetchText(line);
+  prefetchText(plan.follow);
   if (plan.type === 'command') {
     const result = plan.result;
     if (result.type === 'pause') userPaused = true;
@@ -712,16 +740,22 @@ async function judgeTurn(turn) {
   if (plan.follow && session && !session.status().stopped && !hiddenByPage) await say(plan.follow);
 }
 
+function syncExpectation() {
+  if (!session || !detector) return;
+  const prompt = session.prompt();
+  if (prompt === expectationPrompt) return;
+  expectationPrompt = prompt;
+  detector.setExpectation(expectedVoicedMs(prompt));
+}
+
 function pushCaptured(input, ctx) {
   lastFrameAt = Date.now();
-  if (session && detector) detector.setExpectation(expectedVoicedMs(session.prompt()));
-  const copy = new Float32Array(input.length);
-  copy.set(input);
-  const samples = ctx.sampleRate === SAMPLE_RATE ? copy : resampleLinear(copy, ctx.sampleRate, SAMPLE_RATE);
+  syncExpectation();
+  const samples = ctx.sampleRate === SAMPLE_RATE ? input : resampleLinear(input, ctx.sampleRate, SAMPLE_RATE);
   detector?.push(samples);
   let sum = 0;
-  for (let i = 0; i < copy.length; i++) sum += copy[i] * copy[i];
-  showLevel(Math.sqrt(sum / (copy.length || 1)));
+  for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+  showLevel(Math.sqrt(sum / (input.length || 1)));
 }
 
 async function attachCapture(ctx, generation) {
@@ -910,6 +944,7 @@ export function mountDriveCoach(deps) {
     const flushed = session?.flushSaves(true);
     for (const entry of flushed?.sent || []) deps.save(entry);
   });
+  prefetchCoachAudio();
   window.__liltDriveCoach = {
     feed(samples, sampleRate = SAMPLE_RATE) {
       const audio = sampleRate === SAMPLE_RATE ? samples : resampleLinear(samples, sampleRate, SAMPLE_RATE);
@@ -931,7 +966,8 @@ function ensureSession() {
     now: Date.now()
   });
   detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
-  detector.setExpectation(expectedVoicedMs(session.prompt()));
+  expectationPrompt = null;
+  syncExpectation();
   lastFeedback = '';
   statusHeld = false;
   guideRetired = false;

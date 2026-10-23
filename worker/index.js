@@ -14,13 +14,17 @@ async function passwordHash(password, salt) {
   return hex(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations: 100000, hash: 'SHA-256' }, key, 256));
 }
 
+function sessionCookieName(request) {
+  return new URL(request.url).protocol === 'https:' ? '__Host-lilt_session' : 'lilt_session';
+}
+
 function cookie(request, token, age = SESSION_SECONDS) {
   const secure = new URL(request.url).protocol === 'https:';
-  return `${secure ? '__Host-lilt_session' : 'lilt_session'}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${secure ? '; Secure' : ''}`;
+  return `${sessionCookieName(request)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${secure ? '; Secure' : ''}`;
 }
 
 async function session(request, db) {
-  const name = new URL(request.url).protocol === 'https:' ? '__Host-lilt_session' : 'lilt_session';
+  const name = sessionCookieName(request);
   const token = (request.headers.get('Cookie') || '').split(';').map(x => x.trim()).find(x => x.startsWith(`${name}=`))?.slice(name.length + 1);
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
   const tokenHash = await digest(token);
@@ -28,40 +32,53 @@ async function session(request, db) {
   return user ? { ...user, tokenHash } : null;
 }
 
-async function body(request) {
-  if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new HttpError(415, 'Use application/json.');
+async function readLimited(request, maxBytes, tooLargeMessage) {
+  const declared = Number(request.headers.get('Content-Length'));
+  if (Number.isFinite(declared) && declared > maxBytes) throw new HttpError(413, tooLargeMessage);
   const reader = request.body?.getReader();
-  if (!reader) throw new HttpError(400, 'Request body required.');
-  const chunks = []; let size = 0;
+  if (!reader) return null;
+  const chunks = [];
+  let size = 0;
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_BODY) { await reader.cancel(); throw new HttpError(413, 'Progress exceeds the 1 MB limit. Export a backup before trimming history.'); }
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw new HttpError(413, tooLargeMessage);
+    }
     chunks.push(value);
   }
-  const bytes = new Uint8Array(size); let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+async function body(request) {
+  if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new HttpError(415, 'Use application/json.');
+  const bytes = await readLimited(request, MAX_BODY, 'Progress exceeds the 1 MB limit. Export a backup before trimming history.');
+  if (!bytes) throw new HttpError(400, 'Request body required.');
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new HttpError(400, 'Invalid JSON.'); }
 }
 
 async function audioBytes(request) {
-  const reader=request.body?.getReader();
-  if(!reader)throw new HttpError(400,'Audio recording is required.');
-  const chunks=[];let size=0;
-  while(true){
-    const {value,done}=await reader.read();if(done)break;
-    size+=value.byteLength;if(size>MAX_ANALYSIS_AUDIO){await reader.cancel();throw new HttpError(413,'This recording is too large. Keep the prompt recording under 4 MB.');}
-    chunks.push(value);
-  }
-  if(!size)throw new HttpError(400,'Audio recording is empty.');
-  const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength}return bytes;
+  const bytes = await readLimited(request, MAX_ANALYSIS_AUDIO, 'This recording is too large. Keep the prompt recording under 4 MB.');
+  if (!bytes) throw new HttpError(400, 'Audio recording is required.');
+  if (!bytes.byteLength) throw new HttpError(400, 'Audio recording is empty.');
+  return bytes;
 }
 
-function toBase64(bytes){
-  let binary='';const block=0x8000;
-  for(let offset=0;offset<bytes.length;offset+=block)binary+=String.fromCharCode(...bytes.subarray(offset,Math.min(offset+block,bytes.length)));
-  return btoa(binary);
+function toBase64(bytes) {
+  const block = 0x8000;
+  const parts = [];
+  for (let offset = 0; offset < bytes.length; offset += block) {
+    parts.push(String.fromCharCode(...bytes.subarray(offset, Math.min(offset + block, bytes.length))));
+  }
+  return btoa(parts.join(''));
 }
 
 function promptHeader(value){
@@ -215,10 +232,23 @@ async function bumpLimit(db, key) {
   return result.count;
 }
 
-async function assertUnderLimit(db, key, maximum) {
+async function assertUnderLimits(db, checks) {
+  if (!checks.length) return;
   const now = Date.now();
-  const row = await db.prepare('SELECT count, expires_at FROM auth_limits WHERE key = ?').bind(key).first();
-  if (row && row.expires_at > now && row.count >= maximum) throw new HttpError(429, 'Too many requests. Try again in 15 minutes.');
+  const rows = await db.batch(checks.map(check => db.prepare('SELECT key, count, expires_at FROM auth_limits WHERE key = ?').bind(check.key)));
+  for (let index = 0; index < checks.length; index++) {
+    const row = rows[index]?.results?.[0];
+    if (row && row.expires_at > now && row.count >= checks[index].maximum) throw new HttpError(429, 'Too many requests. Try again in 15 minutes.');
+  }
+}
+
+async function storedState(db, userId) {
+  const row = await db.prepare('SELECT data, version FROM user_state WHERE user_id = ?').bind(userId).first();
+  return { state: row ? JSON.parse(row.data) : null, version: row?.version ?? 0 };
+}
+
+function accountPayload(user, saved) {
+  return { user: { id: user.id, email: user.email }, state: saved.state, version: saved.version };
 }
 
 async function limit(db, key, maximum = 20) {
@@ -239,8 +269,9 @@ async function api(request, env) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || typeof password !== 'string' || password.length < 12 || password.length > 128) throw new HttpError(400, 'Enter an email and a password with 12–128 characters.');
     const ipFailKey = `ipfail:${await digest(clientIp(request))}`;
     const loginFailKey = `fail:${await digest(`${email}|${clientIp(request)}`)}`;
-    await assertUnderLimit(db, ipFailKey, IP_FAILURE_LIMIT);
-    if (path.endsWith('login')) await assertUnderLimit(db, loginFailKey, LOGIN_FAILURE_LIMIT);
+    const checks = [{ key: ipFailKey, maximum: IP_FAILURE_LIMIT }];
+    if (path.endsWith('login')) checks.push({ key: loginFailKey, maximum: LOGIN_FAILURE_LIMIT });
+    await assertUnderLimits(db, checks);
     let user;
     if (path.endsWith('register')) {
       const id = crypto.randomUUID(), salt = randomToken();
@@ -264,12 +295,17 @@ async function api(request, env) {
       await db.prepare('DELETE FROM auth_limits WHERE key = ?').bind(loginFailKey).run();
     }
     const token = randomToken();
-    await db.batch([
-      db.prepare('DELETE FROM sessions WHERE expires_at <= ?').bind(Date.now()),
-      db.prepare('DELETE FROM auth_limits WHERE expires_at <= ?').bind(Date.now()),
-      db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(await digest(token), user.id, Date.now() + SESSION_SECONDS * 1000)
+    const now = Date.now();
+    const signingIn = path.endsWith('login');
+    const [saved] = await Promise.all([
+      signingIn ? storedState(db, user.id) : Promise.resolve({ state: null, version: 0 }),
+      db.batch([
+        db.prepare('DELETE FROM sessions WHERE expires_at <= ?').bind(now),
+        db.prepare('DELETE FROM auth_limits WHERE expires_at <= ?').bind(now),
+        db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(await digest(token), user.id, now + SESSION_SECONDS * 1000)
+      ])
     ]);
-    return json({ user: { id: user.id, email: user.email } }, 200, { 'Set-Cookie': cookie(request, token) });
+    return json(accountPayload(user, saved), 200, { 'Set-Cookie': cookie(request, token) });
   }
   const user = await session(request, db);
   if (!user) throw new HttpError(401, 'Sign in to access your progress.');
@@ -292,15 +328,12 @@ async function api(request, env) {
       throw new HttpError(502,'Cloud transcription failed. Your on-device acoustic score is still available.');
     }
   }
-  if (path === '/api/auth/me' && method === 'GET') return json({ user: { id: user.id, email: user.email } });
+  if (path === '/api/auth/me' && method === 'GET') return json(accountPayload(user, await storedState(db, user.id)));
   if (path === '/api/auth/logout' && method === 'POST') {
     await db.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(user.tokenHash).run();
     return json({ ok: true }, 200, { 'Set-Cookie': cookie(request, '', 0) });
   }
-  if (path === '/api/state' && method === 'GET') {
-    const row = await db.prepare('SELECT data, version FROM user_state WHERE user_id = ?').bind(user.id).first();
-    return json({ state: row ? JSON.parse(row.data) : null, version: row?.version ?? 0 });
-  }
+  if (path === '/api/state' && method === 'GET') return json(await storedState(db, user.id));
   if (path === '/api/drive/turn' && method === 'POST') return driveTurn(request, env, db, user);
   if (path === '/api/state' && method === 'PUT') {
     const input = await body(request);
@@ -334,21 +367,20 @@ function readNoul(value) {
   return Number.isFinite(Number(noul)) ? Number(noul) : null;
 }
 
-function wordsFromTranscript(output) {
-  const alternatives = output?.results?.channels?.[0]?.alternatives?.[0];
-  const raw = alternatives?.words || output?.words || [];
-  const words = (Array.isArray(raw) ? raw : []).map(word => ({
-    text: String(word.word || word.punctuated_word || ''),
+function timedWords(raw, textOf) {
+  return (Array.isArray(raw) ? raw : []).map(word => ({
+    text: textOf(word),
     start: Number(word.start),
     end: Number(word.end)
   })).filter(word => word.text && Number.isFinite(word.start) && Number.isFinite(word.end) && word.end > word.start);
+}
+
+function wordsFromTranscript(output) {
+  const alternatives = output?.results?.channels?.[0]?.alternatives?.[0];
+  const words = timedWords(alternatives?.words || output?.words || [], word => String(word.word || word.punctuated_word || ''));
   if (words.length) return { text: String(alternatives?.transcript || words.map(word => word.text).join(' ')).trim(), words };
   const segments = Array.isArray(output?.segments) ? output.segments : [];
-  const segmented = segments.flatMap(segment => Array.isArray(segment.words) ? segment.words : []).map(word => ({
-    text: String(word.word || ''),
-    start: Number(word.start),
-    end: Number(word.end)
-  })).filter(word => word.text && Number.isFinite(word.start) && word.end > word.start);
+  const segmented = timedWords(segments.flatMap(segment => Array.isArray(segment.words) ? segment.words : []), word => String(word.word || ''));
   const text = String(output?.text || output?.transcription_info?.text || alternatives?.transcript || '').trim();
   return { text, words: segmented };
 }
