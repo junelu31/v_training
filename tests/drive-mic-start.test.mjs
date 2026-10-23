@@ -70,12 +70,17 @@ test('a short flicker is not a finished clip and not a dropped route', () => {
   assert.equal(bufferPlayed({ state: 'running', elapsedSec: 0, durationSec: 0.35, nowMs: 500, startedMs: 0, suspendedMs: 400 }), false);
 });
 
-test('an iPhone mic is read from every channel and not through the silent worklet path', () => {
+test('an iPhone mic is not forced to explicit mono, and a downmix keeps the voice on channel 0', () => {
   assert.equal(needsDirectScriptCapture('Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X)'), true);
   assert.equal(needsDirectScriptCapture('Mozilla/5.0 (Macintosh; Intel Mac OS X)', 'MacIntel', 0), false);
   assert.equal(needsDirectScriptCapture('Mozilla/5.0 (Macintosh; Intel Mac OS X)', 'MacIntel', 2), true);
   const voice = new Float32Array([0.2, -0.4, 0.6]);
-  const mixed = mixChannels([new Float32Array(3), voice]);
+  const silent = new Float32Array(3);
+  // WebKit 259193: voice on channel 0, silence on channel 1. Averaging keeps the voice.
+  const phone = mixChannels([voice, silent]);
+  assert.ok(Math.abs(phone[0] - 0.1) < 1e-6);
+  assert.ok(Math.abs(phone[1] + 0.2) < 1e-6);
+  const mixed = mixChannels([silent, voice]);
   assert.ok(Math.abs(mixed[1] + 0.2) < 1e-6);
   assert.equal(mixChannels([voice])[0], voice[0]);
   assert.equal(mixChannels([]).length, 0);
@@ -114,7 +119,10 @@ class FakeAudioContext {
   static holdEnded = false;
   static iosMic = false;
   constructor(options = {}) {
-    this.sampleRate = options.sampleRate || 16000;
+    this.holdEnded = FakeAudioContext.holdEnded;
+    this.iosMic = FakeAudioContext.iosMic;
+    // iPhone hardware rate. A 16 kHz context hides the resampling the phone actually does.
+    this.sampleRate = options.sampleRate || (this.iosMic ? 48000 : 16000);
     this.state = 'suspended';
     this.currentTime = 0;
     this.destination = {};
@@ -125,13 +133,12 @@ class FakeAudioContext {
     this.interruptions = 0;
     this.waiters = [];
     this.nodes = [];
-    this.holdEnded = FakeAudioContext.holdEnded;
-    this.iosMic = FakeAudioContext.iosMic;
     this.gain = null;
     this.mediaSource = null;
     this.workletNodes = 0;
     this.micQueue = new Float32Array(0);
     this.micPos = 0;
+    this.voiceSamplesPosted = 0;
     this.scriptInputs = 1;
     if (this.iosMic) this.audioWorklet = { async addModule() {} };
     FakeAudioContext.latest = this;
@@ -184,20 +191,15 @@ class FakeAudioContext {
       started: false,
       ended: false,
       stopped: false,
-      connect() {},
+      dests: new Set(),
+      connect(dest) { source.dests.add(dest); },
       onended: null,
       start() {
         source.started = true;
         ctx.sources.push(source);
-        if (ctx.holdEnded) {
-          const duration = source.buffer?.duration || 0;
-          source.timer = setTimeout(() => {
-            if (source.ended) return;
-            ctx.currentTime += duration;
-          }, 60);
-          source.timer.unref?.();
-          return;
-        }
+        // Once the mic is live, Safari does not fire onended and does not move
+        // currentTime. The coach has to finish the clip from the wall clock.
+        if (ctx.iosMic || ctx.holdEnded) return;
         source.timer = setTimeout(() => {
           if (source.ended) return;
           source.ended = true;
@@ -216,7 +218,7 @@ class FakeAudioContext {
     return source;
   }
   createMediaStreamSource() {
-    const node = { channelCountMode: 'max', connect() {}, disconnect() {} };
+    const node = { channelCount: 2, channelCountMode: 'max', connect() {}, disconnect() {} };
     this.mediaSource = node;
     return node;
   }
@@ -227,34 +229,57 @@ class FakeAudioContext {
     const node = {
       disconnected: false,
       inputChannels,
+      channelCount: inputChannels,
+      channelCountMode: 'max',
       onaudioprocess: null,
       connect(dest) {
-        // iPhone Safari does not run the callback unless the output is the destination,
-        // and an explicit-mono mic source is silence.
-        if (ctx.iosMic && (dest !== ctx.destination || ctx.mediaSource?.channelCountMode === 'explicit')) return;
+        // iPhone Safari does not run the callback unless the output is the destination.
+        // Explicit mono is one silent channel. Stereo keeps the voice on channel 0
+        // and silence on channel 1 (WebKit 259193). A one-channel processor that was
+        // not forced mono gets the voice on that channel.
+        const explicitMono = node.channelCountMode === 'explicit' && node.channelCount === 1
+          || ctx.mediaSource?.channelCountMode === 'explicit' && ctx.mediaSource?.channelCount === 1;
+        if (ctx.iosMic && dest !== ctx.destination) return;
         const tick = () => {
           if (node.disconnected) return;
-          const size = ctx.iosMic ? 2048 : 128;
-          node.onaudioprocess?.({
-            inputBuffer: {
-              numberOfChannels: node.inputChannels,
-              getChannelData(channel) {
-                if (!ctx.iosMic) return new Float32Array(size);
-                if (channel === 0 || node.inputChannels < 2) return new Float32Array(size);
-                const out = new Float32Array(size);
+          if (ctx.iosMic && ctx.state !== 'running') {
+            node.timer = setTimeout(tick, 10);
+            node.timer.unref?.();
+            return;
+          }
+          const blocks = ctx.iosMic ? 8 : 1;
+          const size = 128;
+          const monoVoice = !explicitMono && (node.channelCount === 1 || node.inputChannels === 1);
+          const stereo = ctx.iosMic && !explicitMono && !monoVoice;
+          for (let n = 0; n < blocks; n++) {
+            const read = new Set();
+            let channel0 = null;
+            const pull = channel => {
+              read.add(channel);
+              if (!ctx.iosMic || explicitMono) return new Float32Array(size);
+              if (stereo && channel !== 0) return new Float32Array(size);
+              if (!channel0) {
+                channel0 = new Float32Array(size);
                 const start = ctx.micPos;
                 const end = Math.min(ctx.micQueue.length, start + size);
-                if (end > start) out.set(ctx.micQueue.subarray(start, end));
+                if (end > start) channel0.set(ctx.micQueue.subarray(start, end));
                 ctx.micPos = end;
-                return out;
               }
-            },
-            outputBuffer: {
-              numberOfChannels: 1,
-              getChannelData: () => new Float32Array(size)
-            }
-          });
-          node.timer = setTimeout(tick, ctx.iosMic ? 5 : 30);
+              return channel0;
+            };
+            node.onaudioprocess?.({
+              inputBuffer: {
+                numberOfChannels: stereo ? 2 : 1,
+                getChannelData: pull
+              },
+              outputBuffer: {
+                numberOfChannels: 1,
+                getChannelData: () => new Float32Array(size)
+              }
+            });
+            if (ctx.iosMic && read.has(0) && channel0) ctx.voiceSamplesPosted += countVoice(channel0);
+          }
+          node.timer = setTimeout(tick, ctx.iosMic ? 10 : 30);
           node.timer.unref?.();
         };
         tick();
@@ -342,8 +367,32 @@ function installPage() {
   return { elements, audioSession, said, media };
 }
 
+function countVoice(samples) {
+  let n = 0;
+  for (let i = 0; i < samples.length; i++) if (Math.abs(samples[i]) > 0.02) n += 1;
+  return n;
+}
+
+function phraseAt48k(seed) {
+  const speech = synthesizeWords([
+    { text: 'hi', ms: 700, f0: 210, f1: 380, f2: 2200, seed, gapMs: 30, gain: 0.6 },
+    { text: 'there', ms: 520, f0: 195, f1: 440, f2: 1850, seed: seed + 4, gapMs: 0, gain: 0.6 }
+  ]).samples;
+  const rate = 48000;
+  const lead = Math.floor(rate * 0.5);
+  const tail = Math.floor(rate * 1.7);
+  const out = new Float32Array(lead + speech.length * 3 + tail);
+  for (let i = 0; i < speech.length; i++) {
+    const sample = speech[i];
+    out[lead + i * 3] = sample;
+    out[lead + i * 3 + 1] = sample;
+    out[lead + i * 3 + 2] = sample;
+  }
+  return out;
+}
+
 function longClips(audio) {
-  return audio.sources.filter(source => source.buffer?.duration > 0.2);
+  return audio.sources.filter(source => source.buffer?.duration > 0.2 && source.started);
 }
 
 async function waitFor(check, label, ms = 4000) {
@@ -492,9 +541,12 @@ test('Drive coach survives the mic sheet, an already granted mic, and a denial',
   }
 });
 
-test('a finished take is coached out loud when the clip end event never arrives', async () => {
-  FakeAudioContext.holdEnded = true;
+test('iPhone Safari hears two sentences through the mic graph and answers out loud', { timeout: 25000 }, async () => {
+  FakeAudioContext.iosMic = true;
   const page = installPage();
+  globalThis.navigator.userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1';
+  globalThis.navigator.platform = 'iPhone';
+  globalThis.navigator.maxTouchPoints = 5;
   try {
     const ui = await freshCoach();
     page.media.devices.getUserMedia = () => Promise.resolve(fakeStream());
@@ -505,32 +557,44 @@ test('a finished take is coached out loud when the clip end event never arrives'
     page.elements.get('startCoach').onclick();
     const audio = FakeAudioContext.latest;
     const coach = globalThis.window.__liltDriveCoach;
-    await waitFor(() => coach.speaking() === false && audio.processors > 0, 'opening finishes without an end event');
+    coach.feed = () => {
+      throw new Error('feed() bypasses the iPhone microphone. The gate does not accept it.');
+    };
+    assert.throws(() => coach.feed(new Float32Array(8)), /bypasses the iPhone microphone/);
+    await waitFor(() => coach.speaking() === false && audio.processors > 0, 'opening finishes with the context clock frozen');
+    assert.equal(audio.sampleRate, 48000);
+    assert.equal(audio.currentTime, 0, 'Safari does not advance currentTime once the mic is live');
+    assert.equal(audio.sources.every(source => !source.timer), true, 'onended never fires from the context clock');
     assert.equal(coach.status().paused, false);
-    assert.ok(audio.gain.gain.value > 0 && audio.gain.gain.value < 0.01, 'capture stays connected without playing the microphone back');
-    const afterOpening = longClips(audio).length;
-    assert.ok(afterOpening >= 1, 'the opening line played from the audio context');
-    // One push while the post-speech guard is still up is discarded whole. Drain it, then speak.
-    coach.feed(new Float32Array(16000));
-    const speech = synthesizeWords([{ text: 'hi', ms: 800, f0: 210, f1: 380, f2: 2200, seed: 21, gapMs: 0 }]).samples;
-    const take = new Float32Array(speech.length + Math.floor(16000 * 1.6));
-    take.set(speech);
-    coach.feed(take);
-    await waitFor(() => {
-      const reply = longClips(audio).find(source => source.started && !source.ended && !source.stopped);
-      return longClips(audio).length > afterOpening && reply;
-    }, `spoken feedback after the take (clips ${longClips(audio).length}, heard "${page.elements.get('coachHeard').textContent}", said "${page.said.join(' | ')}")`);
-    const live = longClips(audio).find(source => source.started && !source.ended && !source.stopped);
-    audio.interruptions = 1;
-    audio.setState('interrupted');
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(live.stopped, false, 'a flicker during the reply leaves it playing');
-    assert.equal(coach.status().paused, false);
-    audio.endInterruption();
-    await new Promise(resolve => setTimeout(resolve, 40));
-    await waitFor(() => coach.speaking() === false, 'the reply finishes and listening starts again');
-    assert.equal(coach.status().paused, false);
-    // The mic-open settle window still covers a drop. Wait it out, then a held drop pauses.
+    assert.equal(page.audioSession.type, 'play-and-record');
+    assert.ok(longClips(audio).length >= 1, 'the opening line played from the audio context');
+    assert.notEqual(audio.mediaSource?.channelCountMode, 'explicit');
+    assert.equal(audio.sources.some(source => source.loop), false);
+    for (let round = 0; round < 2; round++) {
+      const before = longClips(audio).length;
+      const postedBefore = audio.voiceSamplesPosted;
+      audio.micQueue = phraseAt48k(20 + round * 9);
+      audio.micPos = 0;
+      await waitFor(
+        () => longClips(audio).length > before,
+        `round ${round + 1}: no spoken reply (clips ${longClips(audio).length}, heard "${page.elements.get('coachHeard').textContent}", voiced ${audio.voiceSamplesPosted})`,
+        10000
+      );
+      assert.ok(audio.voiceSamplesPosted - postedBefore > 800, `round ${round + 1} posted ${audio.voiceSamplesPosted - postedBefore} voiced samples from channel 0`);
+      assert.equal(audio.currentTime, 0);
+      if (round === 0) {
+        await waitFor(() => longClips(audio).some(source => source.started && !source.ended && !source.stopped), 'a reply clip is still playing when the route flickers');
+        const live = longClips(audio).find(source => source.started && !source.ended && !source.stopped);
+        audio.interruptions = 1;
+        audio.setState('interrupted');
+        await new Promise(resolve => setTimeout(resolve, 50));
+        assert.equal(live.stopped, false, 'a flicker during the reply leaves it playing');
+        assert.equal(coach.status().paused, false, 'a flicker during the reply pauses the coach');
+        audio.endInterruption();
+      }
+      await waitFor(() => coach.speaking() === false, `round ${round + 1}: the coach stayed speaking after the reply`);
+      assert.equal(coach.status().paused, false);
+    }
     await new Promise(resolve => setTimeout(resolve, MIC_SETTLE_MS));
     audio.interruptions = 1;
     audio.setState('interrupted');
@@ -540,57 +604,7 @@ test('a finished take is coached out loud when the clip end event never arrives'
     await waitFor(() => coach.status().paused === false, 'audio coming back resumes the coach');
     audio.stopNodes();
   } finally {
-    FakeAudioContext.holdEnded = false;
-    FakeAudioContext.latest?.stopNodes();
-  }
-});
-
-test('iPhone Safari delivers her take through the mic graph, and the coach answers out loud', async () => {
-  FakeAudioContext.iosMic = true;
-  const page = installPage();
-  globalThis.navigator.userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1';
-  class SilentWorklet {
-    constructor() {
-      this.port = { onmessage: null };
-      FakeAudioContext.latest.workletNodes += 1;
-    }
-    connect() {}
-    disconnect() {}
-  }
-  globalThis.AudioWorkletNode = SilentWorklet;
-  try {
-    const ui = await freshCoach();
-    page.media.devices.getUserMedia = () => Promise.resolve(fakeStream());
-    ui.mountDriveCoach({
-      ...deps('Hi there.'),
-      getLines: () => ['Hi there.', 'We are ready.']
-    });
-    page.elements.get('startCoach').onclick();
-    const audio = FakeAudioContext.latest;
-    const coach = globalThis.window.__liltDriveCoach;
-    await waitFor(() => coach.speaking() === false && audio.processors > 0, 'opening finishes on iPhone');
-    assert.equal(audio.workletNodes, 0, 'the silent iPhone worklet must not be the capture path');
-    assert.equal(audio.scriptInputs, 2, 'both mic channels have to be open');
-    assert.notEqual(audio.mediaSource.channelCountMode, 'explicit');
-    const afterOpening = longClips(audio).length;
-    assert.ok(afterOpening >= 1, 'the opening line played');
-    const speech = synthesizeWords([{ text: 'hi', ms: 800, f0: 210, f1: 380, f2: 2200, seed: 21, gapMs: 0 }]).samples;
-    for (let i = 0; i < speech.length; i++) speech[i] *= 2;
-    const lead = new Float32Array(Math.floor(16000 * 0.7));
-    const tail = new Float32Array(Math.floor(16000 * 1.6));
-    const queued = new Float32Array(lead.length + speech.length + tail.length);
-    queued.set(speech, lead.length);
-    audio.micQueue = queued;
-    audio.micPos = 0;
-    await waitFor(
-      () => longClips(audio).length > afterOpening,
-      `spoken feedback after the iPhone take (clips ${longClips(audio).length}, heard "${page.elements.get('coachHeard').textContent}")`
-    );
-    assert.equal(coach.status().paused, false);
-    audio.stopNodes();
-  } finally {
     FakeAudioContext.iosMic = false;
-    delete globalThis.AudioWorkletNode;
     FakeAudioContext.latest?.stopNodes();
   }
 });

@@ -1,9 +1,9 @@
 // Gate for the live iPhone Safari failure that PR #8 shipped with a green suite.
 //
-// June hears the opening sentence, then nothing after she says it. tests/drive-mic-start.test.mjs
-// still passes that case by calling __liltDriveCoach.feed(), which pushes PCM straight into the
-// turn detector. The script processor in that harness posts zeros, and the clip clock is nudged
-// forward, so the test never asks the capture graph to hear her.
+// June hears the opening sentence, then nothing after she says it. The old
+// drive-mic-start harness called __liltDriveCoach.feed(), posted zeros from the
+// script processor, and nudged the clip clock forward, so it never asked the
+// capture graph to hear her. The follow-up test in that file now uses these rules.
 //
 // This fake is the iPhone graph those tests skip:
 // - Hardware rate is 48 kHz. The worklet block is 128 frames.
