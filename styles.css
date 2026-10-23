@@ -120,5 +120,7 @@
 #micStatus{text-align:center;margin:8px 0 0}
 #driveLengthLabel{margin:28px 0 0}
 #driveView .drive-duration{margin-top:8px}
+.drive-voice{display:flex;gap:8px;flex-wrap:wrap;margin:0}
+.drive-voice .filter-button{font-size:14px;padding:12px 16px}
 .history-play{display:inline-block;margin-top:6px}
 a.primary-button{display:inline-block;text-align:center;text-decoration:none}

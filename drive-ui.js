@@ -2,8 +2,8 @@ import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js'
 import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, openingLine, parseEar } from './drive-coach.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
-import { planSpeech, voiceKey } from './drive-voice.js';
-import { VOICE_CLIPS } from './drive-voice-clips.js';
+import { COACH_VOICE, PRACTICE_VOICE, planSpeech, voiceKey } from './drive-voice.js';
+import { PRACTICE_CLIPS, VOICE_CLIPS } from './drive-voice-clips.js';
 import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
 export { createDriveSession };
@@ -33,6 +33,8 @@ let visibilityHandler = null;
 let workletReady = null;
 let awaitingPermission = false;
 const clipBuffers = new WeakMap();
+const VOICE_STORAGE_KEY = 'lilt-coach-voice';
+let coachVoice = readStoredVoice();
 let judging = false;
 let speechToken = 0;
 const SPEECH_TAIL_MS = 250;
@@ -59,7 +61,47 @@ function clearRoutePause() {
 }
 
 function el(id) {
-  return document.getElementById(id);
+  return globalThis.document?.getElementById?.(id) ?? null;
+}
+
+function readStoredVoice() {
+  try {
+    const saved = globalThis.localStorage?.getItem(VOICE_STORAGE_KEY);
+    if (saved === PRACTICE_VOICE || saved === COACH_VOICE) return saved;
+  } catch { /* private mode, or a test with no storage */ }
+  return COACH_VOICE;
+}
+
+export function activeCoachVoice() {
+  return coachVoice;
+}
+
+export function selectCoachVoice(voice) {
+  coachVoice = voice === PRACTICE_VOICE ? PRACTICE_VOICE : COACH_VOICE;
+  try { globalThis.localStorage?.setItem(VOICE_STORAGE_KEY, coachVoice); } catch { /* keep the choice for this page */ }
+  paintVoiceChoice();
+  const kicker = el('coachKicker');
+  if (kicker) kicker.textContent = coachVoice === PRACTICE_VOICE ? 'PRACTICE VOICE' : 'DRIVE COACH';
+  return coachVoice;
+}
+
+function paintVoiceChoice() {
+  const choice = [
+    ['practiceVoiceButton', PRACTICE_VOICE],
+    ['mainVoiceButton', COACH_VOICE]
+  ];
+  for (const [id, voice] of choice) {
+    const button = el(id);
+    if (!button) continue;
+    const on = coachVoice === voice;
+    button.classList?.toggle?.('active', on);
+    button.setAttribute?.('aria-pressed', on ? 'true' : 'false');
+  }
+  const note = el('driveVoiceNote');
+  if (!note) return;
+  note.textContent = coachVoice === PRACTICE_VOICE
+    ? 'Practice voice is on. Match this lighter voice for now. The main coach voice is still the long-term target.'
+    : 'Main coach voice is on. This is the long-term voice to match. The easier voice is there when you want a lighter target first.';
 }
 
 function show(line, sub = '') {
@@ -67,6 +109,8 @@ function show(line, sub = '') {
   if (!overlay) return;
   const wasHidden = overlay.hidden;
   overlay.hidden = false;
+  const kicker = el('coachKicker');
+  if (kicker) kicker.textContent = coachVoice === PRACTICE_VOICE ? 'PRACTICE VOICE' : 'DRIVE COACH';
   el('coachLine').textContent = line;
   el('coachSub').textContent = sub;
   const guide = el('coachGuide');
@@ -247,8 +291,16 @@ async function suspendAudio() {
 }
 
 // Fragment keys start with ~ and are already normalized.
+function clipsFor(voice = coachVoice) {
+  return voice === PRACTICE_VOICE ? PRACTICE_CLIPS : VOICE_CLIPS;
+}
+
+export function coachClip(key, voice = coachVoice) {
+  return clipsFor(voice)[key.startsWith('~') ? key : voiceKey(key)] || '';
+}
+
 function clipUrl(key) {
-  return VOICE_CLIPS[key.startsWith('~') ? key : voiceKey(key)];
+  return coachClip(key);
 }
 
 function hasClip(key) {
@@ -784,6 +836,7 @@ async function judgeTurn(turn) {
   });
   if (plan.type === 'command') {
     const result = plan.result;
+    if (result.type === 'practice-voice' || result.type === 'main-voice') selectCoachVoice(result.voice);
     if (result.type === 'pause') userPaused = true;
     if (result.type === 'resume') {
       userPaused = false;
@@ -1010,6 +1063,13 @@ export function mountDriveCoach(deps) {
     });
   };
   el('startCoach').onclick = clicked;
+  for (const id of ['practiceVoiceButton', 'mainVoiceButton']) {
+    const button = el(id);
+    const voice = button?.dataset?.coachVoice;
+    if (!button || (voice !== PRACTICE_VOICE && voice !== COACH_VOICE)) continue;
+    button.onclick = () => selectCoachVoice(voice);
+  }
+  paintVoiceChoice();
   el('coachResume').onclick = clicked;
   el('coachFile').onchange = () => {
     const ready = (!session || session.status().stopped) ? ensureStayAwake().arm() : null;

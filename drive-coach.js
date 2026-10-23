@@ -1,6 +1,7 @@
 import { median } from './drive-dsp.js';
 import { cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
+import { COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
 
 export { createDriveSession };
 
@@ -557,6 +558,16 @@ const COACH_COMMANDS = [
     'lines', 'prompts', 'back to lines', 'back to the lines',
     'back to prompts', 'back to the prompts', 'back to the phrases', 'back to phrases',
     'line mode', 'practice lines'
+  ]},
+  { name: 'practice-voice', phrases: [
+    'practice voice', 'easier voice', 'brighter voice', 'easier practice voice',
+    'use the practice voice', 'use the easier voice', 'use the brighter voice',
+    'switch to the practice voice', 'switch to the easier voice', 'switch to practice voice'
+  ]},
+  { name: 'main-voice', phrases: [
+    'main voice', 'main coach voice', 'main coach', 'river', 'target voice',
+    'use the main voice', 'use the main coach voice', 'use river',
+    'switch to the main voice', 'switch to river', 'switch to the main coach'
   ]}
 ];
 
@@ -795,6 +806,14 @@ export function createCoachSession({
       if (name === 'lines') {
         mode = 'lines';
         return { type: 'lines', say: prompt() ? `Back to lines. ${prompt()}` : 'Back to lines.' };
+      }
+      if (name === 'practice-voice' || name === 'main-voice') {
+        const line = prompt();
+        const practice = name === 'practice-voice';
+        const say = practice
+          ? (line ? `Practice voice is on. Match how I say this: ${line}` : 'Practice voice is on. Talk in this voice whenever you are ready.')
+          : (line ? `Main coach voice is on. Match how I say this: ${line}` : 'Main coach voice is on. Talk in this voice whenever you are ready.');
+        return { type: name, voice: practice ? PRACTICE_VOICE : COACH_VOICE, say };
       }
       return { type: 'speech' };
     },

@@ -127,6 +127,38 @@ test('a failed transcript coaches the take and does not invent a command', () =>
   assert.equal(session.status().phraseCount, 1);
 });
 
+test('practice voice and main voice switch the target without moving the line', () => {
+  const session = createCoachSession({ lines, now: 0 });
+  const practice = session.hear('practice voice');
+  assert.equal(practice.type, 'practice-voice');
+  assert.equal(practice.voice, 'af_bella');
+  assert.equal(practice.say, `Practice voice is on. Match how I say this: ${lines[0]}`);
+  assert.equal(session.prompt(), lines[0]);
+  assert.equal(session.status().phraseCount, 0);
+  const main = session.hear('Okay, main voice.');
+  assert.equal(main.type, 'main-voice');
+  assert.equal(main.voice, 'af_river');
+  assert.equal(main.say, `Main coach voice is on. Match how I say this: ${lines[0]}`);
+  assert.equal(session.prompt(), lines[0]);
+  expectCommand('easier voice', 'practice-voice', { prompt: lines[0] });
+  expectCommand('brighter voice', 'practice-voice', { prompt: lines[0] });
+  expectCommand('switch to the easier voice', 'practice-voice', { prompt: lines[0] });
+  expectCommand('river', 'main-voice', { prompt: lines[0] });
+  expectCommand('use the main coach voice', 'main-voice', { prompt: lines[0] });
+  const free = createCoachSession({ lines, now: 0 });
+  free.command('free');
+  const switched = free.hear('practice voice');
+  assert.equal(switched.say, 'Practice voice is on. Talk in this voice whenever you are ready.');
+  assert.equal(free.prompt(), '');
+  const turn = { tooNoisy: true, reason: 'noise', sampleRate: 16000, samples: new Float32Array(0), hopVoicedMs: 800 };
+  const plan = planCoachTurn({ session: createCoachSession({ lines, now: 0 }), turn, heard: 'practice voice', at: 1000 });
+  assert.equal(plan.type, 'command');
+  assert.equal(plan.command, 'practice-voice');
+  assert.equal(plan.feedbackText, '');
+  assert.equal(plan.follow, '');
+  assert.equal(plan.say, `Practice voice is on. Match how I say this: ${lines[0]}`);
+});
+
 test('reading the prompt aloud is coached instead of taken as a command', () => {
   const session = createCoachSession({ lines: [hum, lines[1]], now: 0 });
   const turn = { tooNoisy: true, reason: 'noise', sampleRate: 16000, samples: new Float32Array(0), hopVoicedMs: 800 };

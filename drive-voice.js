@@ -1,16 +1,25 @@
 import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
 import { SESSION_LINES } from './drive-session.js';
 
-// Spoken lines for Drive coach. Every fixed line has a pre-rendered clip under
-// public/voice, in one Kokoro voice. That voice is the sound to imitate.
-// Swap it by changing COACH_VOICE, then re-render with VOICE set to the same id
-// and FORCE=1. A line that names a word or a count is stitched from fragment
-// clips in that same voice: each word of the drive phrases, each problem phrase,
-// the word "and", the summary words, and the numbers 0 to 199.
-// Only a part no fragment covers falls back to cloud speech or the device voice.
+// Spoken lines for Drive coach. Every fixed line has a pre-rendered clip, and
+// the clip that plays is the sound to imitate. af_river is the long-term coach.
+// af_bella is a temporary easier practice target: the same lines, in their own
+// folder, so the two sets never overwrite each other. A line that names a word
+// or a count is stitched from fragment clips in the voice that is playing:
+// each word of the drive phrases, each problem phrase, the word "and", the
+// summary words, and the numbers 0 to 199. Only a part no fragment covers
+// falls back to cloud speech or the device voice.
+//
+// Bella is the first rung because, at this speed, the same sentences sit
+// higher and brighter than River (about 201 Hz, spectral centroid about
+// 2136 Hz, against River at about 184 Hz and 1912 Hz). af_sky, the other
+// voice used here before River, measured lower and darker (about 161 Hz,
+// centroid about 1183 Hz), so it is a harder step from a masculine start.
 
-// af_river: the voice June locked as the coach and the training target.
+// af_river: the voice June locked as the coach and the long-term target.
 export const COACH_VOICE = 'af_river';
+// af_bella: temporary practice voice. Lighter and brighter than River.
+export const PRACTICE_VOICE = 'af_bella';
 export const COACH_VOICE_SPEED = 0.95;
 
 // Lines from drive-coach.js commands and checks. tests/drive-voice.test.mjs fails if one is missing.
@@ -36,7 +45,11 @@ export const LEAD_LINES = [
   'Try it again, and match how I say it:',
   'Next.',
   'Again.',
-  'Back to lines.'
+  'Back to lines.',
+  'Practice voice is on. Match how I say this:',
+  'Practice voice is on. Talk in this voice whenever you are ready.',
+  'Main coach voice is on. Match how I say this:',
+  'Main coach voice is on. Talk in this voice whenever you are ready.'
 ];
 
 export function voiceKey(text) {
@@ -127,11 +140,13 @@ export function planSpeech(text, hasClip) {
   return plan.flatMap(part => ('text' in part ? stitch(part.text, hasClip) || [part] : [part]));
 }
 
-export function clipFile(text) {
+export function clipFile(text, voice = COACH_VOICE) {
   let hash = 0x811c9dc5;
   for (const char of text.startsWith('~') ? text : voiceKey(text)) {
     hash ^= char.codePointAt(0);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return `voice/${hash.toString(16).padStart(8, '0')}.mp3`;
+  const file = `${hash.toString(16).padStart(8, '0')}.mp3`;
+  if (!voice || voice === COACH_VOICE) return `voice/${file}`;
+  return `voice/${voice}/${file}`;
 }
