@@ -231,14 +231,14 @@
         <section class="view" id="driveView">
           <div class="eyebrow" id="driveDate">TODAY</div>
           <h1 id="driveTitle">Ease on the road</h1>
-          <p class="kicker" id="driveLengthLabel">PLANNED LENGTH</p>
-          <div class="drive-duration" id="driveDurations" role="group" aria-labelledby="driveLengthLabel"></div>
+          <p class="kicker" id="driveLengthLabel">UNTIMED PRACTICE</p>
+          <p class="coach-note" id="driveLengthNote">There is no 20, 30, or 40 minute session. Phrases run from easiest to hardest, three tries each, until you tap End practice or finish the bank.</p>
           <p class="kicker" id="driveVoiceLabel">VOICE TO MATCH</p>
           <div class="drive-voice" id="driveVoices" role="group" aria-labelledby="driveVoiceLabel"></div>
           <p class="coach-note" id="driveVoiceNote"></p>
           <div class="drive-stack">
             <button class="primary-button coach-start" id="startCoach" type="button">Start Drive coach</button>
-            <p class="coach-note">After you start, talk through the lines. Say next, repeat, pause, stop, how am I doing, practice voice, or main voice. The screen stays on for the session. Switching apps pauses the coach until you come back.</p>
+            <p class="coach-note">After you start, talk through the lines from easiest to hardest. Three tries, then the next phrase. Say next, repeat, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the whole session. The screen stays on until you end it. Switching apps pauses the coach until you come back.</p>
             <article class="settings-card">
               <span class="kicker">CUE</span>
               <h2 id="driveCue"></h2>
@@ -249,14 +249,7 @@
               <span class="kicker">CHECK-IN</span>
               <h2>After you practice</h2>
               <div class="drive-check">
-                <label>Minutes you actually spoke
-                  <select id="driveActual" class="full-select">
-                    <option value="20">20</option>
-                    <option value="30" selected>30</option>
-                    <option value="40">40</option>
-                    <option value="0">Skipped — I did not practice</option>
-                  </select>
-                </label>
+                <p>This check-in does not set a length. The coach records the time you actually spoke.</p>
                 <label>Comfort <output id="driveComfortOutput">3 / 5</output><input id="driveComfort" type="range" min="1" max="5" value="3" /></label>
                 <label>Did the cue hold?
                   <select id="driveCueHeld" class="full-select">
@@ -326,8 +319,11 @@
       <div class="coach-level" aria-hidden="true"><span id="coachLevel"></span></div>
       <p id="coachHeard" class="coach-heard" aria-live="polite"></p>
       <p id="coachGuide" class="coach-guide">Switching apps pauses the coach until you come back.</p>
+      <p id="coachProgress" class="coach-progress"></p>
       <button class="primary-button coach-voice-switch" id="coachVoiceSwitch" type="button">Switch to practice voice</button>
-      <p id="coachCommands" class="coach-commands">You can say next phrase, say it again, pause, how am I doing, practice voice, main voice, or I'm done.</p>
+      <button class="coach-end" id="coachEnd" type="button">End practice</button>
+      <p id="coachProblems" class="coach-problems" hidden></p>
+      <p id="coachCommands" class="coach-commands">You can say next phrase, say it again, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the session.</p>
       <p id="coachAwake" class="coach-awake" hidden></p>
       <button class="primary-button coach-resume" id="coachResume" type="button" hidden>Tap to continue</button>
       <p id="coachTestRow" hidden><label>Test audio<input id="coachFile" type="file" accept="audio/*,video/*" /></label></p>

@@ -115,7 +115,7 @@ A local browser pass can feed a file instead of the microphone: `npm run db:loca
 
 ## Drive practice
 
-Drive practice is a 20-, 30-, or 40-minute speaking list. Today’s routine matches the current course week. After all 40 sessions are complete, the maintenance routine is used. Choosing a planned length also sets the check-in minutes, which you can still change before saving. An optional check-in logs minutes, comfort, and whether the cue held. That log counts toward the weekly minute ring, the streak, and Progress practice time. It does not complete a course activity.
+Drive practice has no set length. Phrases run from easiest to hardest, up to three tries each, until you tap End practice or finish the bank. Today’s routine matches the current course week. After all 40 sessions are complete, the maintenance routine is used. An optional check-in logs comfort and whether the cue held. The coach log counts the minutes you actually spoke toward the weekly minute ring, the streak, and Progress practice time. It does not complete a course activity.
 
 - <https://www.asha.org/practice-portal/professional-issues/gender-affirming-voice-and-communication/>
 - <https://transcare.ucsf.edu/guidelines/vocal-health>

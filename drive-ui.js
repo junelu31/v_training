@@ -1,5 +1,5 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
-import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar } from './drive-coach.js';
+import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, voiceKey, writeDriveVoice } from './drive-voice.js';
@@ -38,6 +38,7 @@ let driveVoiceId = COACH_VOICE;
 let captureClock = null;
 const clipBuffers = new WeakMap();
 let judging = false;
+let practiceOver = false;
 let speechToken = 0;
 const SPEECH_TAIL_MS = 250;
 let levelFrame = 0;
@@ -74,10 +75,31 @@ function show(line, sub = '') {
   el('coachLine').textContent = line;
   el('coachSub').textContent = sub;
   paintDriveVoice();
+  paintProgress();
   const guide = el('coachGuide');
   if (lastFeedback) guideRetired = true;
   if (guide) guide.hidden = guideRetired;
   if (wasHidden) overlay.focus();
+}
+
+function paintProgress() {
+  const node = el('coachProgress');
+  if (!node) return;
+  if (practiceOver || !session) {
+    node.textContent = '';
+    return;
+  }
+  const status = session.status();
+  const phrase = session.prompt();
+  if (!phrase || status.mode !== 'lines') {
+    node.textContent = '';
+    return;
+  }
+  const { band } = phraseDifficulty(phrase);
+  const label = band === 'easy' ? 'Easy' : band === 'medium' ? 'Medium' : 'Hard';
+  const upcoming = Math.min((status.lineAttempts || 0) + 1, MAX_PHRASE_ATTEMPTS);
+  const place = Math.min(status.lineIndex + 1, status.lineCount || status.lineIndex + 1);
+  node.textContent = `${label} · phrase ${place} of ${status.lineCount} · try ${upcoming} of ${MAX_PHRASE_ATTEMPTS}`;
 }
 
 function showHeard(text) {
@@ -667,15 +689,60 @@ function unbindVisibility() {
   visibilityHandler = null;
 }
 
+function showWrapUp(summary) {
+  const achieved = summary?.achieved || 0;
+  const attempted = summary?.attempted || 0;
+  show(
+    attempted ? `${achieved} of ${attempted} phrases achieved` : 'No phrases yet',
+    'Achieved means the phrase passed: a take with no coaching note, and not too noisy to judge. Attempted means you spoke that phrase at least once.'
+  );
+  const problems = el('coachProblems');
+  if (problems) {
+    const rows = summary?.problems || [];
+    problems.hidden = false;
+    problems.textContent = rows.length
+      ? ['Words that were hard', ...rows.map(row => `${row.word} — ${row.phonetics}${row.count > 1 ? ` · ${row.count} tries` : ''}`)].join('\n')
+      : 'No word was flagged as hard.';
+  }
+  const progress = el('coachProgress');
+  if (progress) progress.textContent = '';
+  const commands = el('coachCommands');
+  if (commands) commands.hidden = true;
+  const switchButton = el('coachVoiceSwitch');
+  if (switchButton) switchButton.hidden = true;
+  const guide = el('coachGuide');
+  if (guide) guide.hidden = true;
+  const end = el('coachEnd');
+  if (end) {
+    end.hidden = false;
+    end.textContent = 'Done';
+  }
+}
+
 async function finishSession(entry) {
+  if (practiceOver) return;
+  practiceOver = true;
+  session?.markEnded?.();
+  const summary = session?.wrapUp?.() || { achieved: 0, attempted: 0, problems: [] };
   if (entry) savedDeps.save(entry);
+  showWrapUp(summary);
   await ensureStayAwake().stop();
   showAwake('off');
   unbindVisibility();
   releaseGraph();
   await suspendAudio();
-  const overlay = el('coachOverlay');
-  if (overlay) overlay.hidden = true;
+}
+
+async function endPractice() {
+  if (practiceOver) {
+    const overlay = el('coachOverlay');
+    if (overlay) overlay.hidden = true;
+    return;
+  }
+  if (!session || session.status().stopped) return;
+  const result = session.command('stop', clock ? clock() : Date.now());
+  if (result.say) await say(result.say);
+  await finishSession(result.entry);
 }
 
 function spokenLine(turn, local, voice = COACH_VOICE) {
@@ -800,13 +867,25 @@ export function planCoachTurn({
   }
   const coached = Boolean(judged.feedback?.spoken);
   const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
-  const next = !coached && !tooNoisy ? coachSession.advance() : '';
-  const follow = followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next, voice });
+  const passed = !coached && !tooNoisy;
+  const after = coachSession.status();
+  const moveOn = !noted.ignored && shouldLeavePhrase({
+    ignored: false,
+    passed,
+    attempts: after.lineAttempts,
+    mode: after.mode
+  });
+  const next = moveOn ? coachSession.advance() : '';
+  const finished = Boolean(moveOn && !next && coachSession.status().exhausted);
+  const follow = moveOn
+    ? (next ? (passed ? followUpLine({ prompt: next, coached: false, tooNoisy: false, next, voice }) : `Next. ${next}`) : '')
+    : followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next: '', voice });
   return {
     type: 'practice',
     feedbackText,
     extra,
     follow,
+    finished,
     say: '',
     heardLine: coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : 'Heard you. That matched.',
     statusHeld: /\btoo noisy\b/i.test(judged.feedback?.text || ''),
@@ -848,7 +927,7 @@ async function judgeTurn(turn) {
       try { await listen(); } catch { /* the resume button stays available */ }
     }
     if (result.say) await say(result.say);
-    if (result.type === 'stop') await finishSession(result.entry);
+    if (result.type === 'stop' || result.finished) await finishSession(result.entry);
     else if (result.entry) savedDeps.save(result.entry);
     return;
   }
@@ -865,8 +944,13 @@ async function judgeTurn(turn) {
   }
   if (plan.checkpoint) checkpoint();
   showHeard(plan.heardLine);
-  show(plan.showLine, lastFeedback);
+  if (!plan.finished) show(plan.showLine, lastFeedback);
   if (plan.follow && session && !session.status().stopped && !hiddenByPage) await say(plan.follow);
+  if (plan.finished && session && !hiddenByPage) {
+    session.markEnded();
+    await say('Stopping. I saved this drive.');
+    await finishSession(session.logEntry());
+  }
 }
 
 function pushCaptured(input, ctx) {
@@ -1109,6 +1193,11 @@ function bindDriveVoiceControls() {
     };
     if (switchButton.dataset) switchButton.dataset.bound = '1';
   }
+  const endButton = el('coachEnd');
+  if (endButton && !endButton.dataset?.bound) {
+    endButton.onclick = () => { endPractice().catch(() => {}); };
+    if (endButton.dataset) endButton.dataset.bound = '1';
+  }
 }
 
 function selectDriveVoice(id, { announce = false } = {}) {
@@ -1200,6 +1289,21 @@ export function mountDriveCoach(deps) {
 
 function ensureSession() {
   if (session && !session.status().stopped) return session;
+  practiceOver = false;
+  const endButton = el('coachEnd');
+  if (endButton) {
+    endButton.hidden = false;
+    endButton.textContent = 'End practice';
+  }
+  const problems = el('coachProblems');
+  if (problems) {
+    problems.hidden = true;
+    problems.textContent = '';
+  }
+  const commands = el('coachCommands');
+  if (commands) commands.hidden = false;
+  const switchButton = el('coachVoiceSwitch');
+  if (switchButton) switchButton.hidden = false;
   session = createCoachSession({
     plannedMinutes: savedDeps.getPlanned(),
     routineId: savedDeps.getRoutine(),
