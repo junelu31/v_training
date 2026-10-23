@@ -4,10 +4,13 @@ import { readFileSync, statSync, existsSync } from 'node:fs';
 import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
 import { SESSION_LINES } from '../drive-session.js';
 import { createCoachSession, followUpLine, openingLine } from '../drive-coach.js';
-import { COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, clipFile, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
-import { VOICE_CLIPS } from '../drive-voice-clips.js';
+import { COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, PRACTICE_LEAD_LINES, PRACTICE_VOICE, RIVER_SWITCH_LINES, clipFile, fixedVoiceLines, fragmentLines, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
+import { PRACTICE_CUE_LIBRARY } from '../drive-cues.js';
+import { PRACTICE_SESSION_LINES } from '../drive-session.js';
+import { PRACTICE_CLIPS, VOICE_CLIPS } from '../drive-voice-clips.js';
 
 const has = text => Boolean(VOICE_CLIPS[text.startsWith("~") ? text : voiceKey(text)]);
+const hasPractice = text => Boolean(PRACTICE_CLIPS[text.startsWith("~") ? text : voiceKey(text)]);
 globalThis.window = {};
 await import('../course.js');
 const content = globalThis.window.COURSE_CONTENT;
@@ -114,4 +117,42 @@ test('clips are the one coach voice, and together stay under 16 MB', () => {
   assert.equal(meta.channels, 1);
   const total = Object.values(VOICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
   assert.ok(total < 16 * 1024 * 1024, `clips total ${total} bytes`);
+  for (const line of RIVER_SWITCH_LINES) {
+    assert.ok(has(line), line);
+    assert.ok(existsSync(new URL(`../public/${clipFile(line)}`, import.meta.url)), line);
+  }
+});
+
+test('the practice voice has its own clips for cues, leads, and the same phrase bank', () => {
+  const meta = JSON.parse(readFileSync(new URL('../public/voice/af_bella/voice.json', import.meta.url), 'utf8'));
+  assert.equal(meta.voice, PRACTICE_VOICE);
+  assert.equal(meta.speed, COACH_VOICE_SPEED);
+  const spoken = [
+    ...fixedVoiceLines(phrases, PRACTICE_VOICE),
+    ...Object.values(PRACTICE_CUE_LIBRARY).flatMap(entry => entry.variants),
+    ...Object.values(PRACTICE_SESSION_LINES),
+    ...PRACTICE_LEAD_LINES
+  ];
+  for (const line of spoken) {
+    assert.ok(hasPractice(line), `no practice clip for: ${line}`);
+    const file = new URL(`../public/${clipFile(line, PRACTICE_VOICE)}`, import.meta.url);
+    assert.ok(existsSync(file), `missing practice file for: ${line}`);
+    assert.equal(PRACTICE_CLIPS[voiceKey(line)], clipFile(line, PRACTICE_VOICE));
+  }
+  for (const line of fragmentLines(phrases)) {
+    const key = `~${line}`;
+    assert.ok(PRACTICE_CLIPS[key], key);
+    assert.ok(existsSync(new URL(`../public/${clipFile(key, PRACTICE_VOICE)}`, import.meta.url)), key);
+  }
+  const cue = PRACTICE_CUE_LIBRARY.heavy.variants[0];
+  assert.deepEqual(planSpeech(`Arriving went heavy. ${cue}`, hasPractice), [{ clip: '~arriving' }, { clip: '~went heavy' }, { clip: cue }]);
+  for (const phrase of phrases) {
+    for (const line of [openingLine(phrase, { voice: PRACTICE_VOICE }), followUpLine({ prompt: phrase, coached: true, voice: PRACTICE_VOICE }), `Next. ${phrase}`, `Again. ${phrase}`]) {
+      const plan = planSpeech(line, hasPractice);
+      assert.ok(plan.every(part => part.clip), `runtime part in practice voice: ${line}`);
+    }
+  }
+  const total = Object.values(PRACTICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
+  assert.ok(total < 16 * 1024 * 1024, `practice clips total ${total} bytes`);
+  assert.ok(Object.keys(PRACTICE_CLIPS).length >= Object.keys(VOICE_CLIPS).length - 30);
 });

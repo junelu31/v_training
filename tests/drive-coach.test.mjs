@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { analyzePcm, createTurnDetector, detectTurns, makeRoadNoise, mixAtSnr, synthesizeWords } from '../drive-dsp.js';
 import { classifyUtterance, composeFeedback, confusion, createCoachSession, joinIssueWords, matchCommand, profilePhrase, scoreFlags } from '../drive-coach.js';
-import { CUE_LIBRARY, cueLine } from '../drive-cues.js';
+import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, cueLine } from '../drive-cues.js';
+import { COACH_VOICE, DRIVE_VOICES, PRACTICE_VOICE, readDriveVoice, writeDriveVoice } from '../drive-voice.js';
+import { PRACTICE_SESSION_LINES, sessionLine } from '../drive-session.js';
 
 const goal = { pitch: [175, 225], brightness: [-8, -4] };
 
@@ -24,6 +26,45 @@ test('cue library rotates physical lines and stays free of markup', () => {
   assert.match(cueLine('fry', 0), /air flowing/);
   assert.match(cueLine('strain', 0), /light hum/);
   assert.notEqual(cueLine('drop', 0), cueLine('drop', 1));
+});
+
+test('the practice voice has its own physical cues', () => {
+  const physical = /tongue|larynx|pitch|air|hum|sigh|lips|chest|jaw|push/;
+  const banned = /feminine|woman|girl|lady|\bRiver\b|gender/i;
+  for (const issue of ['drop', 'chesty', 'dark', 'heavy', 'fry', 'low', 'breath', 'strain']) {
+    const practice = PRACTICE_CUE_LIBRARY[issue].variants;
+    const river = new Set(CUE_LIBRARY[issue].variants);
+    assert.ok(practice.length >= 2, issue);
+    for (const line of practice) {
+      assert.equal(river.has(line), false, line);
+      assert.equal(banned.test(line), false, line);
+      assert.equal(/[<>]/.test(line), false, line);
+      assert.match(line, physical, line);
+      assert.equal(/\.$/.test(line), true, line);
+    }
+    assert.equal(cueLine(issue, 0, PRACTICE_VOICE), practice[0]);
+    assert.equal(cueLine(issue, 0, COACH_VOICE), CUE_LIBRARY[issue].variants[0]);
+  }
+  const line = composeFeedback({
+    words: [{ text: 'June', flags: [{ issue: 'heavy', speak: true }] }],
+    cursor: 0,
+    voice: PRACTICE_VOICE
+  });
+  assert.equal(line.text, `June went heavy. ${cueLine('heavy', 0, PRACTICE_VOICE)}`);
+  assert.match(line.text, /thin sigh/);
+  assert.equal(sessionLine('pitch-low', PRACTICE_VOICE), PRACTICE_SESSION_LINES['pitch-low']);
+  assert.notEqual(sessionLine('pitch-low', PRACTICE_VOICE), sessionLine('pitch-low'));
+  const memory = { store: {}, getItem(key) { return this.store[key]; }, setItem(key, value) { this.store[key] = value; } };
+  assert.equal(readDriveVoice(memory), COACH_VOICE);
+  assert.equal(writeDriveVoice(memory, PRACTICE_VOICE), PRACTICE_VOICE);
+  assert.equal(readDriveVoice(memory), PRACTICE_VOICE);
+  assert.equal(memory.getItem('lilt-coach-voice'), PRACTICE_VOICE);
+  const gate = { store: { 'lilt-coach-voice': PRACTICE_VOICE }, getItem(key) { return this.store[key]; }, setItem(key, value) { this.store[key] = value; } };
+  assert.equal(readDriveVoice(gate), PRACTICE_VOICE);
+  assert.equal(writeDriveVoice(memory, 'af_sky'), COACH_VOICE);
+  assert.match(DRIVE_VOICES[PRACTICE_VOICE].note, /higher and lighter/);
+  assert.match(DRIVE_VOICES[COACH_VOICE].note, /voice to land on/);
+  for (const voice of Object.values(DRIVE_VOICES)) assert.equal(/[<>]|let's|certainly/i.test(voice.note), false);
 });
 
 test('profile uses resonance and weight, so pitch alone loses the swapped voices', () => {
