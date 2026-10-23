@@ -9,9 +9,8 @@ import { SESSION_LINES } from './drive-session.js';
 // the word "and", the summary words, and the numbers 0 to 199.
 // Only a part no fragment covers falls back to cloud speech or the device voice.
 
-// af_sky: the voice June locked as the coach and the training target.
-// On a short line at speed 0.95 it sits near 170 Hz, lower and less bright than af_bella.
-export const COACH_VOICE = 'af_sky';
+// af_river: the voice June locked as the coach and the training target.
+export const COACH_VOICE = 'af_river';
 export const COACH_VOICE_SPEED = 0.95;
 
 // Lines from drive-coach.js commands and checks. tests/drive-voice.test.mjs fails if one is missing.
