@@ -14,7 +14,7 @@ export const SESSION_LINES = {
   'too-noisy': 'This one is too noisy to coach.'
 };
 
-// Whole-take lines for the temporary practice voice. Higher, lighter, a little more forward.
+// Whole-take lines for the temporary practice voice. Higher and lighter than River.
 export const PRACTICE_SESSION_LINES = {
   'pitch-low': 'Hum the next word up in the lighter part of your voice, and keep it where I say it.',
   'pitch-drop-end': 'Lift the end of the word and keep it light, the way I finish it.',

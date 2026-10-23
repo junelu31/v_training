@@ -83,8 +83,9 @@ export const CUE_LIBRARY = {
 };
 
 // Cues for the temporary practice voice (Kokoro af_bella), not for River.
-// Bella sits higher and lighter than River, with a slightly more forward vowel.
-// These lines name that placement. They are not notes about sounding feminine.
+// Bella sits higher and lighter than River. These lines name that placement:
+// pitch in the lighter part of the voice, a thin start, and the tongue a little
+// farther forward. They are not notes about sounding feminine.
 export const PRACTICE_CUE_LIBRARY = {
   drop: {
     name: 'End-of-phrase pitch drop',

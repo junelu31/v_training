@@ -14,10 +14,9 @@ import { PRACTICE_SESSION_LINES, SESSION_LINES } from './drive-session.js';
 // it sits near 173 Hz, with a thicker tone (H1-H2 about -2 dB).
 export const COACH_VOICE = 'af_river';
 export const COACH_VOICE_SPEED = 0.95;
-// af_bella: temporary practice voice. Same paragraph, about 212 Hz and a much
-// lighter tone (H1-H2 about +7 dB), with a slightly more forward vowel.
-// af_sky is lower (about 152 Hz) and darker (centroid near 990 Hz), so the gap
-// from a masculine start is smaller, not larger.
+// af_bella: temporary practice voice. Same paragraph at speed 0.95, about 212 Hz
+// and a lighter tone (H1-H2 about +8 dB). af_sky is lower (about 152 Hz) and
+// darker (centroid near 990 Hz), so the gap from a masculine start is smaller.
 export const PRACTICE_VOICE = 'af_bella';
 export const DRIVE_VOICE_STORAGE_KEY = 'lilt-drive-voice';
 
