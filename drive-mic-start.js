@@ -42,16 +42,17 @@ export function onContextState({ state, covered, hidden, stopped, userPaused, pa
 }
 
 /**
- * iPhone Safari's AudioWorklet mic input stays silent: the stream is stereo,
- * channel 0 is empty, and forcing the source to explicit mono yields silence.
- * A ScriptProcessor connected straight to the destination still receives the mic.
+ * iPhone Safari capture uses a ScriptProcessor connected to the destination.
+ * AudioWorkletNode defaults to an explicit channel count. Forcing that count
+ * to 1 hands the processor one silent channel. Stereo input keeps the voice
+ * on channel 0 and silence on channel 1 (WebKit bug 259193).
  */
 export function needsDirectScriptCapture(userAgent = '', platform = '', touchPoints = 0) {
   if (/iPad|iPhone|iPod/.test(userAgent)) return true;
   return platform === 'MacIntel' && touchPoints > 1;
 }
 
-/** Downmix every channel. Reading only channel 0 drops the iPhone mic. */
+/** Downmix every channel. On iPhone the voice is channel 0 and channel 1 is silent. */
 export function mixChannels(channels) {
   const list = (channels || []).filter(channel => channel && channel.length);
   if (!list.length) return new Float32Array(0);
