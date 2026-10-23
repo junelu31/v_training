@@ -16,8 +16,10 @@
 // - onended never fires, and currentTime does not move, once the mic is live. A clip finishes
 //   only from the wall clock.
 // - The script processor keeps the microphone only while a clip is still playing, or while a
-//   looping source is connected to that processor. After the one-shot prompt ends, silence
-//   here is the live bug.
+//   looping source is upstream of that processor. Connecting the loop as the processor's own
+//   input replaces the mic on Safari (only the last connection is kept). Her voice has to
+//   remain upstream, summed with the loop. After the one-shot prompt ends, silence here is
+//   the live bug.
 // - feed() throws. A reply counts only when a new clip buffer starts on the audio context.
 //
 // A pass here is still not a phone certificate. It does not measure earpiece routing or the
@@ -165,12 +167,38 @@ class SafariAudioContext {
     this.stop();
     return Promise.resolve();
   }
+  link(from, dest) {
+    if (from.output && from.output.inputs) {
+      const index = from.output.inputs.indexOf(from);
+      if (index >= 0) from.output.inputs.splice(index, 1);
+    }
+    from.output = dest || null;
+    if (!dest) return;
+    if (!dest.inputs) dest.inputs = [];
+    if (!dest.inputs.includes(from)) dest.inputs.push(from);
+  }
+  // Safari's ScriptProcessor keeps only its most recent input. A GainNode still sums.
+  chainHas(node, pred) {
+    const seen = new Set();
+    const walk = current => {
+      if (!current || seen.has(current)) return false;
+      seen.add(current);
+      if (pred(current)) return true;
+      const inputs = current.inputs || [];
+      if (current.kind === 'script') return walk(inputs[inputs.length - 1]);
+      return inputs.some(input => walk(input));
+    };
+    return walk(node);
+  }
   createGain() {
+    const ctx = this;
     const node = {
+      kind: 'gain',
       context: this,
       gain: { value: 0 },
-      connect() { node.connected = true; },
-      disconnect() { node.connected = false; },
+      inputs: [],
+      connect(dest) { ctx.link(node, dest); node.connected = true; },
+      disconnect() { ctx.link(node, null); node.connected = false; },
       connected: false
     };
     this.gain = node;
@@ -192,8 +220,8 @@ class SafariAudioContext {
       ended: false,
       stopped: false,
       dests: new Set(),
-      connect(dest) { source.dests.add(dest); },
-      disconnect() { source.dests.clear(); },
+      connect(dest) { ctx.link(source, dest); source.dests.add(dest); },
+      disconnect() { ctx.link(source, null); source.dests.clear(); },
       onended: null,
       start() {
         source.started = true;
@@ -211,13 +239,16 @@ class SafariAudioContext {
     return source;
   }
   createMediaStreamSource() {
+    const ctx = this;
     const node = {
       kind: 'source',
+      liveMic: true,
+      inputs: [],
       channelCount: 2,
       channelCountMode: 'max',
       channelInterpretation: 'speakers',
-      connect() { node.connected = true; },
-      disconnect() { node.connected = false; },
+      connect(dest) { ctx.link(node, dest); node.connected = true; },
+      disconnect() { ctx.link(node, null); node.connected = false; },
       connected: false
     };
     return node;
@@ -239,6 +270,7 @@ class SafariAudioContext {
     const ctx = this;
     const node = {
       kind: 'script',
+      inputs: [],
       channelCount: inputChannels,
       channelCountMode: 'max',
       channelInterpretation: 'speakers',
@@ -265,11 +297,15 @@ class SafariAudioContext {
     }
   }
   capturePulling(node) {
-    // Safari stops a ScriptProcessor when the last one-shot buffer ends. A looping
-    // source connected to that processor is what keeps the microphone scheduled.
+    // Safari stops a ScriptProcessor when the last one-shot buffer ends, and it
+    // keeps only the most recent node connected to that processor. A silent loop
+    // connected on its own replaces the microphone. Her voice counts only when
+    // the live mic is still upstream of the processor's one input.
+    const mic = this.chainHas(node, item => item.liveMic);
+    if (!mic) return false;
     const clip = this.sources.some(source => source.started && !source.stopped && !source.ended && !source.loop && (source.buffer?.duration || 0) > 0.2);
     if (clip) return true;
-    return this.sources.some(source => source.loop && source.started && !source.stopped && !source.ended && source.dests?.has(node));
+    return this.chainHas(node, item => item.loop && item.started && !item.stopped && !item.ended);
   }
   inputBlock(node) {
     const silent = new Float32Array(BLOCK);
@@ -473,8 +509,9 @@ test('iPhone Safari hears a repeated sentence through the mic graph and answers 
     const capture = audio.nodes.find(node => node.kind === 'worklet') || audio.nodes.find(node => node.kind === 'script');
     assert.ok(capture, 'no capture node');
     assert.equal(audio.currentTime, 0, 'Safari does not advance currentTime once the mic is live');
+    assert.ok(audio.chainHas(capture, item => item.liveMic), 'the silent keep-alive replaced the microphone');
     assert.ok(
-      audio.sources.some(source => source.loop && source.started && !source.stopped && source.dests.has(capture)),
+      audio.chainHas(capture, item => item.loop && item.started && !item.stopped),
       'after the prompt ends, nothing keeps the mic processor alive'
     );
 
