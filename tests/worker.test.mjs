@@ -27,7 +27,13 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.match(setCookie, /__Host-lilt_session=.*HttpOnly.*SameSite=Lax.*Secure/);
     const first = setCookie.split(';')[0];
     assert.equal((await call('/api/auth/register', 'POST', credentials)).status, 409);
-    assert.equal((await call('/api/auth/me', 'GET', undefined, first)).status, 200);
+    const me = await call('/api/auth/me', 'GET', undefined, first);
+    assert.equal(me.status, 200);
+    const meBody = await me.json();
+    assert.equal(meBody.user.email, credentials.email);
+    assert.equal(typeof meBody.user.id, 'string');
+    assert.equal(meBody.state, null);
+    assert.equal(meBody.version, 0);
     assert.deepEqual(await (await call('/api/state', 'GET', undefined, first)).json(), { state: null, version: 0 });
     const state = { goal: 'balanced', attempts: [], completed: [], saveAudio: false, rate: 0.88, voice: '', sessionStarted: null };
     assert.equal((await call('/api/state', 'PUT', { state, version: 0 }, first)).status, 200);
@@ -50,6 +56,10 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await call('/api/auth/login', 'POST', { ...credentials, password: 'wrong-long-password' })).status, 401);
     const login = await call('/api/auth/login', 'POST', credentials);
     assert.equal(login.status, 200);
+    const loginBody = await login.json();
+    assert.equal(loginBody.user.email, credentials.email);
+    assert.deepEqual(loginBody.state, withDefaults(changed));
+    assert.equal(loginBody.version, 2);
     const signedIn = login.headers.get('Set-Cookie').split(';')[0];
     assert.deepEqual((await (await call('/api/state', 'GET', undefined, signedIn)).json()).state, withDefaults(changed));
     const ramonaState = { ...changed, goal: 'ramona' };
