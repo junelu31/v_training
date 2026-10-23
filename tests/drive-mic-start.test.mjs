@@ -184,11 +184,15 @@ class FakeAudioContext {
       started: false,
       ended: false,
       stopped: false,
-      connect() {},
+      dests: new Set(),
+      connect(dest) { source.dests.add(dest); },
       onended: null,
       start() {
         source.started = true;
         ctx.sources.push(source);
+        // A one-shot prompt must not keep the clock moving after it stops.
+        // A looping silent source is what keeps the iPhone mic graph pulling.
+        if (source.loop) return;
         if (ctx.holdEnded) {
           const duration = source.buffer?.duration || 0;
           source.timer = setTimeout(() => {
@@ -230,10 +234,18 @@ class FakeAudioContext {
       onaudioprocess: null,
       connect(dest) {
         // iPhone Safari does not run the callback unless the output is the destination,
-        // and an explicit-mono mic source is silence.
+        // and an explicit-mono mic source is silence. It also stops once the opening
+        // buffer ends, unless a looping silent source is still connected here.
         if (ctx.iosMic && (dest !== ctx.destination || ctx.mediaSource?.channelCountMode === 'explicit')) return;
         const tick = () => {
           if (node.disconnected) return;
+          const clock = ctx.sources.some(item => item.loop && item.started && !item.stopped && item.dests?.has(node));
+          const prompt = ctx.sources.some(item => !item.loop && item.started && !item.ended && !item.stopped && (item.buffer?.duration || 0) > 0.05);
+          if (ctx.iosMic && !clock && !prompt) {
+            node.timer = setTimeout(tick, 5);
+            node.timer.unref?.();
+            return;
+          }
           const size = ctx.iosMic ? 2048 : 128;
           node.onaudioprocess?.({
             inputBuffer: {
@@ -547,6 +559,7 @@ test('a finished take is coached out loud when the clip end event never arrives'
 
 test('iPhone Safari delivers her take through the mic graph, and the coach answers out loud', async () => {
   FakeAudioContext.iosMic = true;
+  FakeAudioContext.holdEnded = true;
   const page = installPage();
   globalThis.navigator.userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1';
   class SilentWorklet {
@@ -574,22 +587,33 @@ test('iPhone Safari delivers her take through the mic graph, and the coach answe
     assert.notEqual(audio.mediaSource.channelCountMode, 'explicit');
     const afterOpening = longClips(audio).length;
     assert.ok(afterOpening >= 1, 'the opening line played');
+    assert.ok(audio.sources.some(item => item.loop && item.started && !item.stopped), 'the mic graph needs a looping source after the prompt');
     const speech = synthesizeWords([{ text: 'hi', ms: 800, f0: 210, f1: 380, f2: 2200, seed: 21, gapMs: 0 }]).samples;
     for (let i = 0; i < speech.length; i++) speech[i] *= 2;
     const lead = new Float32Array(Math.floor(16000 * 0.7));
     const tail = new Float32Array(Math.floor(16000 * 1.6));
     const queued = new Float32Array(lead.length + speech.length + tail.length);
     queued.set(speech, lead.length);
-    audio.micQueue = queued;
-    audio.micPos = 0;
-    await waitFor(
-      () => longClips(audio).length > afterOpening,
-      `spoken feedback after the iPhone take (clips ${longClips(audio).length}, heard "${page.elements.get('coachHeard').textContent}")`
-    );
-    assert.equal(coach.status().paused, false);
+    // A 40 minute drive is many takes. The first reply is the reported silence.
+    // Later replies are the same graph still pulling after each prompt and cue.
+    for (let take = 1; take <= 8; take += 1) {
+      const before = longClips(audio).length;
+      audio.micQueue = queued;
+      audio.micPos = 0;
+      await waitFor(
+        () => longClips(audio).length > before && coach.speaking() === false,
+        `spoken feedback after iPhone take ${take} (clips ${longClips(audio).length}, heard "${page.elements.get('coachHeard').textContent}")`,
+        8000
+      );
+      assert.equal(coach.status().paused, false, `take ${take} paused the coach`);
+    }
+    assert.equal(audio.workletNodes, 0);
+    assert.equal(audio.scriptInputs, 2);
+    assert.ok(audio.sources.some(item => item.loop && item.started && !item.stopped));
     audio.stopNodes();
   } finally {
     FakeAudioContext.iosMic = false;
+    FakeAudioContext.holdEnded = false;
     delete globalThis.AudioWorkletNode;
     FakeAudioContext.latest?.stopNodes();
   }

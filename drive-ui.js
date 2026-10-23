@@ -32,6 +32,7 @@ let stayAwake = null;
 let visibilityHandler = null;
 let workletReady = null;
 let awaitingPermission = false;
+let captureClock = null;
 const clipBuffers = new WeakMap();
 let judging = false;
 let speechToken = 0;
@@ -218,7 +219,25 @@ function armOutput(ctx) {
     source.connect(ctx.destination);
     source.start();
   } catch { /* the context is already unlocked, or it is closing */ }
+  // Started inside the tap. iOS stops the mic processor when this one-shot ends.
+  try { ensureCaptureClock(ctx); } catch { /* the context is closing */ }
   return pending;
+}
+
+// A looping silent buffer, started in the Start tap. On iPhone Safari the script
+// processor only keeps pulling the microphone while a source like this stays
+// connected to it. The opening prompt is a one-shot buffer, so without this the
+// processor stops when the prompt ends and her take never reaches the coach.
+function ensureCaptureClock(ctx) {
+  if (captureClock) return captureClock;
+  const rate = ctx.sampleRate || SAMPLE_RATE;
+  const buffer = ctx.createBuffer(1, Math.max(1, Math.round(rate * 0.02)), rate);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  source.start();
+  captureClock = source;
+  return source;
 }
 
 function outputGain(ctx) {
@@ -850,7 +869,9 @@ function attachScriptCapture(ctx, generation, { direct }) {
     }
   };
   sourceNode.connect(processor);
-  // iOS only runs this callback when the processor's output is the context destination.
+  // iOS only runs this callback when the processor's output is the context destination,
+  // and only while a looping source is still connected. The prompt is not that source.
+  if (direct) ensureCaptureClock(ctx).connect(processor);
   processor.connect(direct ? ctx.destination : outputGain(ctx));
 }
 
