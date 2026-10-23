@@ -1,11 +1,20 @@
-// Spoken lines for Drive coach. Every fixed line has a pre-rendered clip under
-// public/voice, so the coach sounds like one natural voice. A line that names a
-// word or a count is stitched from fragment clips: each word of the drive
-// phrases, each problem phrase, the summary words and the numbers 0 to 199.
-// Only a part no fragment covers falls back to cloud speech or the device voice.
-
 import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
 import { SESSION_LINES } from './drive-session.js';
+
+// Spoken lines for Drive coach. Every fixed line has a pre-rendered clip under
+// public/voice, in one Kokoro voice. That voice is the sound to imitate.
+// Swap it by changing COACH_VOICE, then re-render with VOICE set to the same id
+// and FORCE=1. A line that names a word or a count is stitched from fragment
+// clips in that same voice: each word of the drive phrases, each problem phrase,
+// the word "and", the summary words, and the numbers 0 to 199.
+// Only a part no fragment covers falls back to cloud speech or the device voice.
+
+// af_sarah: American woman, a bit lower and less bright than af_bella, still in a
+// feminine speaking range. Measured on a short line at speed 0.95: about 194 Hz
+// median pitch, against about 215 Hz and a brighter spectrum for af_bella.
+// af_nicole sits nearer 158 Hz, under the feminine floor this app aims at.
+export const COACH_VOICE = 'af_sarah';
+export const COACH_VOICE_SPEED = 0.95;
 
 // Lines from drive-coach.js commands and checks. tests/drive-voice.test.mjs fails if one is missing.
 export const COACH_LINES = [
@@ -17,21 +26,17 @@ export const COACH_LINES = [
   'Free talk. I will coach whatever you say. Say lines when you want the prompts back.',
   'Back to lines.',
   'Nothing to report yet.',
-  'That is a low comfort score, so I am stopping here. Rest your voice.',
-  'Thank you. Keep it easy.',
-  'I am listening again.',
-  'Quick comfort check. Say a number from one to five.',
-  'You have been at this a while. A short rest would be kind. Say stop if you want to save and pause.'
+  'I am listening again.'
 ];
 
 // Leads that come before a phrase. Each is one clip so the phrasing stays natural.
 export const LEAD_LINES = [
-  'Drive coach is on. Say this:',
-  'Drive coach is on. Talk whenever you are ready.',
-  'The coach is listening again. Say this:',
-  'The coach is listening again. Talk whenever you are ready.',
-  'That was clear. Next:',
-  'Try it again:',
+  'Drive coach is on. Match how I say this:',
+  'Drive coach is on. Talk in this voice whenever you are ready.',
+  'The coach is listening again. Match how I say this:',
+  'The coach is listening again. Talk in this voice whenever you are ready.',
+  'That matched. Next:',
+  'Try it again, and match how I say it:',
   'Next.',
   'Again.',
   'Back to lines.'
@@ -52,6 +57,7 @@ export function fragmentKey(text) {
 }
 
 export const SUMMARY_FRAGMENTS = ['phrases', 'held', 'had a note', 'too noisy to coach'];
+const GLUE_FRAGMENTS = ['and'];
 export const MAX_COUNT = 199;
 
 export function fragmentLines(phrases = []) {
@@ -63,7 +69,7 @@ export function fragmentLines(phrases = []) {
   }
   const improved = IMPROVED_LINES.flatMap(line => line.split(/'?\{word\}'?/)).map(part => part.trim()).filter(Boolean);
   const counts = Array.from({ length: MAX_COUNT + 1 }, (_, n) => String(n));
-  const all = [...words, ...problems, ...improved, ...SUMMARY_FRAGMENTS, ...counts];
+  const all = [...words, ...problems, ...improved, ...SUMMARY_FRAGMENTS, ...GLUE_FRAGMENTS, ...counts];
   const seen = new Map();
   for (const line of all) {
     const key = fragmentKey(line);

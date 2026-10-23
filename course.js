@@ -171,3 +171,74 @@ window.COURSE_CONTENT = {
     ]}
   ]
 };
+
+// Everyday lines for the live drive coach. Each week keeps its three practice
+// lines first, then this bank, so a long drive does not loop the same handful.
+// The drive page and the coach both read drives[].lines, which point here.
+function driveTalk(id, title, phrase) {
+  return {
+    id, track: 'DRIVE', title, duration: '1 min', category: 'Drive', phrase,
+    cue: 'Listen to the coach say it, then match that voice. Keep the easy sound through the last word.',
+    why: 'Everyday speech, so the target voice has somewhere to live besides a drill.',
+    focus: 'Transfer',
+    note: 'A drive-coach line. Say it the way the coach does.'
+  };
+}
+
+const DRIVE_TALK = [
+  driveTalk('talk_hey', 'A hello', 'Hey, it is good to see you.'),
+  driveTalk('talk_morning', 'Morning hello', 'Good morning. How has your morning been so far?'),
+  driveTalk('talk_glad', 'Glad you are here', 'Hi. I am glad you made it.'),
+  driveTalk('talk_just_got_in', 'Just got in', 'Hey, I just got in. How are you doing?'),
+  driveTalk('talk_hear_you', 'Nice to hear you', 'Hi there. It is nice to hear your voice.'),
+  driveTalk('talk_day_going', 'How is the day', 'Hello. I hope your day is going all right.'),
+  driveTalk('talk_store', 'Stop at the store', 'I need to stop by the store on the way home.'),
+  driveTalk('talk_milk', 'Milk and bread', 'Could you pick up some milk and bread?'),
+  driveTalk('talk_post', 'Post office', 'I am heading to the post office after this.'),
+  driveTalk('talk_coffee_beans', 'Coffee at home', 'Do we still need coffee, or did you already get some?'),
+  driveTalk('talk_package', 'Drop off a package', 'I will drop the package off before dinner.'),
+  driveTalk('talk_dry_cleaning', 'Dry cleaning', 'Can you grab the dry cleaning if you are nearby?'),
+  driveTalk('talk_notes', 'Meeting notes', 'I sent the notes from the meeting this morning.'),
+  driveTalk('talk_next_call', 'The next call', 'I can take a call in about ten minutes.'),
+  driveTalk('talk_update', 'The update', 'The update is ready whenever you want to look at it.'),
+  driveTalk('talk_moved_meeting', 'Moved the meeting', 'I moved the meeting to three, so we have a little more time.'),
+  driveTalk('talk_email', 'Finish the email', 'I will finish this email, and then I am free.'),
+  driveTalk('talk_anything_else', 'Anything else', 'Let me know if you need anything else from me today.'),
+  driveTalk('talk_rain', 'Rain later', 'It looks like rain later, so I am bringing a jacket.'),
+  driveTalk('talk_wind', 'Sun and wind', 'The sun is out, but the wind is pretty strong.'),
+  driveTalk('talk_cold', 'Colder than expected', 'It is colder than I expected this morning.'),
+  driveTalk('talk_fog', 'Fog and traffic', 'Traffic is slow, and the fog has not lifted yet.'),
+  driveTalk('talk_warm_up', 'Warm this afternoon', 'It should warm up by the afternoon.'),
+  driveTalk('talk_dinner', 'Dinner tonight', 'Are we still on for dinner tonight?'),
+  driveTalk('talk_after_six', 'After six', 'I can meet you there a little after six.'),
+  driveTalk('talk_leave_at_four', 'Leave at four', 'Let us leave around four, so we are not rushing.'),
+  driveTalk('talk_walk_over', 'Walk over', 'I was thinking we could walk over if the weather holds.'),
+  driveTalk('talk_saturday', 'Saturday instead', 'Saturday works better for me than Friday.'),
+  driveTalk('talk_ten_away', 'Ten minutes away', 'I will text you when I am about ten minutes away.'),
+  driveTalk('talk_appointment', 'Check the appointment', 'Hi, I am calling to check whether my appointment is still at two.'),
+  driveTalk('talk_returning', 'Returning a call', 'Hi, this is June. I am returning your call.'),
+  driveTalk('talk_missed', 'Missed you', 'Sorry I missed you. Call me when you have a minute.'),
+  driveTalk('talk_on_the_road', 'On the road', 'I am on the road, so I will keep this short.'),
+  driveTalk('talk_call_back', 'Call you back', 'Can I call you back in a few minutes?'),
+  driveTalk('talk_confirm_noon', 'Confirm noon', 'Hi, I wanted to confirm that we are still meeting at noon.'),
+  driveTalk('talk_oat_milk', 'Coffee order', 'Could I get a coffee with oat milk, please?'),
+  driveTalk('talk_soup', 'Soup and salad', 'I will have the vegetable soup and a side salad.'),
+  driveTalk('talk_add_tea', 'Add a tea', 'Can I add a tea to that order?'),
+  driveTalk('talk_for_here', 'For here', 'For here, please, and no ice in the water.'),
+  driveTalk('talk_check', 'The check', 'Could we get the check when you have a minute?'),
+  driveTalk('talk_sandwich', 'The lunch special', 'I would like the sandwich on the lunch special, please.'),
+  driveTalk('talk_busy_week', 'A busy week', 'Work has been busy, but the weekend helped.'),
+  driveTalk('talk_new_place', 'The new place', 'I tried that new place on the corner, and it was really good.'),
+  driveTalk('talk_sister', 'Sister visiting', 'My sister is visiting next week, so the house will be full.'),
+  driveTalk('talk_album', 'That album', 'I have been listening to the album you mentioned.'),
+  driveTalk('talk_bridge', 'Past the bridge', 'The drive over was easy once I got past the bridge.'),
+  driveTalk('talk_book', 'The ending', 'I finally finished the book, and the ending surprised me.'),
+  driveTalk('talk_weekend', 'Your weekend', 'How was your weekend? Did you get any rest?'),
+  driveTalk('talk_trip', 'The trip', 'I keep meaning to tell you about the trip.'),
+  driveTalk('talk_your_end', 'Your end', 'Nothing much on my end. How about you?')
+];
+
+window.COURSE_CONTENT.drills.push(...DRIVE_TALK);
+for (const drive of window.COURSE_CONTENT.drives) {
+  drive.lines.push(...DRIVE_TALK.map(item => item.id));
+}

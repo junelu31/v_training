@@ -6,11 +6,11 @@
 import { analyzePcm, createTurnDetector } from './drive-dsp.js';
 
 export const SESSION_LINES = {
-  'pitch-low': 'Hum the next word, and bring the pitch up a little.',
-  'pitch-drop-end': 'Lift the end of the word with a small hum.',
-  'vocal-fry': 'Keep breath flowing through the last word, and lift the pitch a little so the end does not creak.',
-  'resonance-dark': 'Move the tongue more forward, toward the front of the mouth.',
-  breathiness: 'Use a little less air so the tone stays clear.',
+  'pitch-low': 'Hum the next word, and bring the pitch up to where I say it.',
+  'pitch-drop-end': 'Lift the end of the word the way I do.',
+  'vocal-fry': 'Keep breath flowing through the last word, and lift the pitch a little so the end stays as clear as mine.',
+  'resonance-dark': 'Move the tongue more forward, toward the front of the mouth, so it matches my sound.',
+  breathiness: 'Use a little less air so the tone stays as clear as mine.',
   'too-noisy': 'This one is too noisy to coach.'
 };
 
