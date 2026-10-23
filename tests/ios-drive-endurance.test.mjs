@@ -718,17 +718,17 @@ function practiceClip(url, id) {
   return url.includes(`voice/${id}/`);
 }
 
-function riverClip(url) {
+function coachClip(url) {
   return /(?:^|\/)voice\/[0-9a-f]{8}\.mp3$/.test(url);
 }
 
-test('af_bella speaks when it is the practice voice, and River stays the main voice', async () => {
+test('af_bella speaks when it is the practice voice, and Aurora stays the main voice', async () => {
   const mod = await import('../drive-voice.js');
   if (!mod.PRACTICE_VOICE) {
-    assert.equal(mod.COACH_VOICE, 'af_river');
+    assert.equal(mod.COACH_VOICE, 'aurora');
     return;
   }
-  assert.equal(mod.COACH_VOICE, 'af_river');
+  assert.equal(mod.COACH_VOICE, 'aurora');
   assert.equal(mod.PRACTICE_VOICE, 'af_bella');
   const store = new Map([['lilt-coach-voice', mod.PRACTICE_VOICE]]);
   globalThis.localStorage = {
@@ -741,15 +741,15 @@ test('af_bella speaks when it is the practice voice, and River stays the main vo
   try {
     const { audio, coach } = await mountAndStart(page, DRIVE_LINES.slice(0, 3));
     assert.ok(page.urls.some(url => practiceClip(url, 'af_bella')), `practice clips did not play: ${page.urls.filter(url => url.includes('voice/')).slice(0, 6).join(' | ')}`);
-    assert.equal(page.urls.some(riverClip), false, 'the practice voice played River clips');
+    assert.equal(page.urls.some(coachClip), false, 'the practice voice played coach clips');
     await expectReply(page, audio, coach);
     const switched = page.urls.length;
     page.nextTranscript = 'main voice';
     await expectReply(page, audio, coach);
     page.nextTranscript = '';
     const mainClips = page.urls.slice(switched);
-    assert.ok(mainClips.some(riverClip), `main voice did not play River: ${mainClips.join(' | ')}`);
-    assert.equal(mainClips.some(url => practiceClip(url, 'af_bella')), false, 'River reply still used Bella clips');
+    assert.ok(mainClips.some(coachClip), `main voice did not play Aurora: ${mainClips.join(' | ')}`);
+    assert.equal(mainClips.some(url => practiceClip(url, 'af_bella')), false, 'Aurora reply still used Bella clips');
     assert.equal(coach.status().paused, false);
     assert.equal(coach.speaking(), false);
     audio.stopNodes();
@@ -759,27 +759,23 @@ test('af_bella speaks when it is the practice voice, and River stays the main vo
   }
 });
 
-test('af_river stays the clip voice, and a second practice voice is checked when it is declared', async () => {
+test('aurora stays the clip voice, and a second practice voice is checked when it is declared', async () => {
   const meta = JSON.parse(readFileSync(new URL('../public/voice/voice.json', import.meta.url), 'utf8'));
-  // The practice-voice change can export either name, or record the id on the manifest.
-  // Until that lands, the only voice is af_river and this test is the switch point.
   const mod = await import('../drive-voice.js');
   assert.equal(meta.voice, mod.COACH_VOICE, 'voice.json must be the voice the coach actually plays');
-  const named = [mod.COACH_VOICE, mod.RIVER_VOICE, meta.river, ...(meta.voices || [])].filter(Boolean);
-  assert.ok(named.includes('af_river'), `af_river is no longer named (${named.join(', ')})`);
+  assert.equal(mod.COACH_VOICE, 'aurora');
+  const named = [mod.COACH_VOICE, mod.PRACTICE_VOICE, ...(meta.voices || [])].filter(Boolean);
+  assert.ok(named.includes('aurora'), `aurora is no longer named (${named.join(', ')})`);
   const practice = mod.PRACTICE_VOICE || mod.EASIER_PRACTICE_VOICE || meta.practiceVoice || '';
-  if (!practice) {
-    assert.equal(mod.COACH_VOICE, 'af_river');
-    return;
-  }
+  if (!practice) return;
   assert.match(practice, /^[a-z]{2}_[a-z0-9]+$/, practice);
-  if (practice !== 'af_river') assert.ok(named.includes('af_river'));
+  assert.notEqual(practice, mod.COACH_VOICE);
   assert.equal(meta.voice, mod.COACH_VOICE);
 });
 
 test('the iPhone matrix says what this harness covers and what the phone still has to prove', () => {
   const text = readFileSync(new URL('../qa/iphone-safari-drive.md', import.meta.url), 'utf8');
-  for (const needle of ['Simulated', 'phone', 'screen lock', 'af_river', 'feed()', 'Bluetooth', 'CarPlay']) {
+  for (const needle of ['Simulated', 'phone', 'screen lock', 'aurora', 'feed()', 'Bluetooth', 'CarPlay']) {
     assert.match(text, new RegExp(needle, 'i'), needle);
   }
 });

@@ -7,7 +7,11 @@ const DB_NAME = 'lilt-recordings';
 
 const presets = {
   bright: { name: 'Bright femme', short: 'High femme', description: 'Lighter weight, brighter resonance, and expressive movement.', pitch: [190, 245], brightness: [-6, -2], movement: [4, 10], weights: { pitch:.25, brightness:.35, movement:.22, ease:.18 } },
-  balanced: { name: 'Balanced femme', short: 'Balanced femme', description: 'A flexible everyday sound: forward, clear, and comfortably animated.', pitch: [175, 225], brightness: [-8, -4], movement: [3, 9], weights: { pitch:.25, brightness:.35, movement:.22, ease:.18 } },
+  // Drive's default goal (getGoal). A multi-sentence Aurora sample at speed 0.95
+  // measures pitch median ~171.9 Hz and brightness median ~-13.6 dB. Pitch keeps
+  // the old 50 Hz width. Brightness [-16, -10] is centered on that median.
+  // scoreBand peaks at the midpoint: 185 Hz and -13 dB.
+  balanced: { name: 'Balanced femme', short: 'Balanced femme', description: 'A flexible everyday sound matched to Aurora: pitch near 172 Hz, spectral balance near -13 dB, comfortably animated.', pitch: [160, 210], brightness: [-16, -10], movement: [3, 9], weights: { pitch:.25, brightness:.35, movement:.22, ease:.18 } },
   mature: { name: 'Mature & warm', short: 'Mature / warm', description: 'Grounded pitch with a clear, warm resonance and measured melody.', pitch: [155, 205], brightness: [-10, -6], movement: [2, 7], weights: { pitch:.2, brightness:.38, movement:.2, ease:.22 } },
   tomboy: { name: 'Tomboyish femme', short: 'Tomboyish', description: 'Lower, direct, and relaxed while keeping resonance clear and speech light.', pitch: [145, 195], brightness: [-10, -5], movement: [2, 7], weights: { pitch:.15, brightness:.42, movement:.2, ease:.23 } },
   ramona: { name: 'Ramona-inspired', short: 'Ramona-inspired', description: 'Laid-back, dry, and direct; a character-inspired practice direction, not a voice replica.', pitch: [145, 195], brightness: [-10, -5], movement: [2, 7], weights: { pitch:.15, brightness:.42, movement:.2, ease:.23 } }

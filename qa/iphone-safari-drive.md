@@ -39,15 +39,15 @@ These are not in the harness. A green run does not clear them.
 
 ## Voices
 
-The long-term voice is `COACH_VOICE` (`af_river`) and `voice` in `public/voice/voice.json`. They must match.
+The long-term voice is `COACH_VOICE` (`aurora`, Grok / xAI TTS) and `voice` in `public/voice/voice.json`. They must match. Coach clips stay at `voice/<hash>.mp3`. A multi-sentence Aurora sample at speed 0.95 measures pitch median about 171.9 Hz and brightness median about −13.6 dB. Drive’s default balanced goal is pitch [160, 210] and brightness [−16, −10].
 
-`PRACTICE_VOICE` is the temporary easier voice. When that export exists it is `af_bella`, stored under `lilt-coach-voice`. The suite then runs one iPhone repeat on Bella (clips from `voice/af_bella/`) and one “main voice” command that comes back to River. Until the export exists, the suite stays on River and does not invent a second voice.
+`PRACTICE_VOICE` is the temporary easier voice, Kokoro `af_bella`, stored under `lilt-coach-voice`. The suite runs one iPhone repeat on Bella (clips from `voice/af_bella/`) and one “main voice” command that comes back to Aurora. Spoken switch lines say “Back to Aurora.” Coach-root mp3s are Aurora (`source` `xai-tts` in `voice.json`). Bella clips stay under `voice/af_bella/`.
 
 ## Review notes
 
 - Do not deploy from this branch. `npm run deploy` publishes the Worker.
 - Do not treat a green `npm test` from before this file as evidence the phone will speak. PR #8’s harness injected audio with `feed()`.
-- On the PR #8 tree the hear-take path is red: the opening plays, the worklet is explicit-mono, and her take never arrives. PR #10 is the fix and is on main. Rebased here, the same file is green (7 tests, including the 53-line drive). The Bella practice voice is PR #12 (`PRACTICE_VOICE = af_bella`). A throwaway merge of #10 with #12, keeping both the iPhone capture imports and the Bella clip imports, also ran green, including a Bella repeat and a “main voice” switch back to River. #12 alone stays red on the old worklet path.
+- On the PR #8 tree the hear-take path is red: the opening plays, the worklet is explicit-mono, and her take never arrives. PR #10 is the fix and is on main. Rebased here, the same file is green (7 tests, including the 53-line drive). The Bella practice voice is PR #12 (`PRACTICE_VOICE = af_bella`). A throwaway merge of #10 with #12, keeping both the iPhone capture imports and the Bella clip imports, also ran green, including a Bella repeat and a “main voice” switch back to the long-term coach. That coach is now Aurora (`COACH_VOICE = aurora`), not Kokoro `af_river`. #12 alone stays red on the old worklet path.
 - If the fix hears her through some other node, update the fake in the same change. A worklet-only fix will stay red here, because the fake worklet models Safari’s silent channel 0.
 - The 53-line run is compressed wall time. It is not a 40-minute soak and it is not a substitute for tomorrow’s phone pass.
 - Residual phone risks are the table above. The first things to listen for on the phone: the reply after the first repeat, a route change mid-phrase, and the coach still answering past the 20-minute mark with the screen locked once.

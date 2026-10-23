@@ -7,11 +7,21 @@ import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, cueLine } from '../drive-cues.js';
 import { COACH_VOICE, DRIVE_VOICES, PRACTICE_VOICE, readDriveVoice, writeDriveVoice } from '../drive-voice.js';
 import { PRACTICE_SESSION_LINES, sessionLine } from '../drive-session.js';
 
-const goal = { pitch: [175, 225], brightness: [-8, -4] };
+const goal = { pitch: [160, 210], brightness: [-16, -10] };
 
 function frames({ hz, f2, vtl, tilt, resonance, count = 8 }) {
   return Array.from({ length: count }, () => ({ voiced: true, hz, f2, vtl, tilt, resonance, centroid: 1200, fry: 0, unstable: false }));
 }
+
+test('the default balanced goal is Aurora’s measured pitch and brightness', () => {
+  const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('balanced:'), source.indexOf('mature:'));
+  assert.match(block, /pitch:\s*\[160,\s*210\]/);
+  assert.match(block, /brightness:\s*\[-16,\s*-10\]/);
+  assert.equal(/\[-8,\s*-4\]/.test(block), false);
+  assert.equal(goal.pitch[0], 160);
+  assert.equal(goal.brightness[0], -16);
+});
 
 test('cue library rotates physical lines and stays free of markup', () => {
   for (const [issue, entry] of Object.entries(CUE_LIBRARY)) {

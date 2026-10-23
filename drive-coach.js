@@ -1,7 +1,7 @@
 import { median } from './drive-dsp.js';
 import { cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
-import { COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
+import { AURORA_SWITCH_LINES, COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
 
 export { createDriveSession };
 
@@ -608,7 +608,7 @@ function isPromptReading(said, prompt) {
 
 const VOICE_REQUESTS = [
   { voice: PRACTICE_VOICE, phrases: ['practice voice', 'easier voice', 'easier practice', 'brighter voice', 'the practice voice'] },
-  { voice: COACH_VOICE, phrases: ['main voice', 'river', 'back to river', 'the main voice', 'main coach voice'] }
+  { voice: COACH_VOICE, phrases: ['main voice', 'aurora', 'back to aurora', 'the main voice', 'main coach voice'] }
 ];
 
 /** A whole utterance that asks to change the coach voice. The current line stays put. */
@@ -653,9 +653,8 @@ export function openingLine(prompt, { resumed = false, voice = COACH_VOICE, swit
     return prompt ? `${lead} ${prompt}` : idle;
   }
   if (switched) {
-    return prompt
-      ? `Back to River. Match how I say this: ${prompt}`
-      : 'Back to River. Talk in this voice whenever you are ready.';
+    const [withPrompt, idle] = AURORA_SWITCH_LINES;
+    return prompt ? `${withPrompt} ${prompt}` : idle;
   }
   const lead = resumed ? 'The coach is listening again.' : 'Drive coach is on.';
   return prompt ? `${lead} Match how I say this: ${prompt}` : `${lead} Talk in this voice whenever you are ready.`;

@@ -1,11 +1,13 @@
-"""Render Drive coach lines with one Kokoro voice to small mono MP3 clips.
+"""Render Kokoro practice clips for Drive coach.
 
-The default voice is af_river, the long-term target. The practice voice is
-af_bella, written under public/voice/af_bella/. Re-run with VOICE set to the
-id and FORCE=1 to rebuild clips that already exist.
+Coach clips are Grok Aurora (xAI voice_id aurora). Render those with
+scripts/render_aurora_tts.mjs into public/voice/<hash>.mp3. This script is
+for Kokoro practice voices only. The default is af_bella, written under
+public/voice/af_bella/. It does not write the coach root. Re-run with VOICE
+set to the practice id and FORCE=1 to rebuild clips that already exist.
 
-Usage: node scripts/voice-lines.mjs > /tmp/lines.json
-       VOICE=af_river SPEED=0.95 FORCE=1 python scripts/render_voice.py /tmp/lines.json /path/to/kokoro-v1.0.onnx /path/to/voices-v1.0.bin
+Usage: VOICE=af_bella node scripts/voice-lines.mjs > /tmp/lines.json
+       VOICE=af_bella SPEED=0.95 FORCE=1 python scripts/render_voice.py /tmp/lines.json /path/to/kokoro-v1.0.onnx /path/to/voices-v1.0.bin
        node scripts/voice-lines.mjs --manifest
 Needs: pip install kokoro-onnx soundfile, and ffmpeg.
 """
@@ -14,16 +16,21 @@ import soundfile as sf
 from kokoro_onnx import Kokoro
 
 lines_path, model, voices = sys.argv[1:4]
-voice = os.environ.get("VOICE", "af_river")
+voice = os.environ.get("VOICE", "af_bella")
 speed = float(os.environ.get("SPEED", "0.95"))
+if voice == "aurora":
+    sys.exit("aurora is the xAI coach voice. Use scripts/render_aurora_tts.mjs.")
 kokoro = Kokoro(model, voices)
-meta_dir = "public/voice" if voice == "af_river" else f"public/voice/{voice}"
+meta_dir = f"public/voice/{voice}"
 os.makedirs(meta_dir, exist_ok=True)
 with open(os.path.join(meta_dir, "voice.json"), "w") as meta:
     json.dump({"voice": voice, "speed": speed, "rate": 24000, "channels": 1, "bitrate": "48k"}, meta)
     meta.write("\n")
 for line in json.load(open(lines_path)):
-    out = os.path.join("public", line["file"])
+    rel = line["file"]
+    if rel.startswith("voice/") and "/" not in rel[len("voice/"):]:
+        sys.exit(f"Refusing coach-root clip {rel}. Aurora clips use scripts/render_aurora_tts.mjs. Generate practice lines with VOICE=af_bella.")
+    out = os.path.join("public", rel)
     if os.path.exists(out) and not os.environ.get("FORCE"):
         continue
     samples, rate = kokoro.create(line["text"], voice=voice, speed=speed, lang="en-us")

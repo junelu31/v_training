@@ -120,7 +120,7 @@ test('a command skips phrase feedback and only speaks its short reply', () => {
 test('practice voice and main voice switch the coach and leave the line alone', () => {
   assert.equal(matchVoiceRequest('main voice'), COACH_VOICE);
   assert.equal(matchVoiceRequest('Main voice.'), COACH_VOICE);
-  assert.equal(matchVoiceRequest('okay, back to river'), COACH_VOICE);
+  assert.equal(matchVoiceRequest('okay, back to aurora'), COACH_VOICE);
   assert.equal(matchVoiceRequest('practice voice'), PRACTICE_VOICE);
   assert.equal(matchVoiceRequest('easier voice please'), PRACTICE_VOICE);
   assert.equal(matchVoiceRequest('I need the main voice later today', { prompt: lines[0] }), null);
@@ -130,7 +130,7 @@ test('practice voice and main voice switch the coach and leave the line alone', 
   const plan = planCoachTurn({ session, turn, heard: 'main voice', at: 1000, voice: PRACTICE_VOICE });
   assert.equal(plan.type, 'voice');
   assert.equal(plan.voice, COACH_VOICE);
-  assert.match(plan.say, /^Back to River\./);
+  assert.match(plan.say, /^Back to Aurora\./);
   assert.equal(plan.feedbackText, '');
   assert.equal(session.prompt(), lines[0]);
   assert.equal(session.status().phraseCount, 0);

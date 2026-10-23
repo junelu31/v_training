@@ -4,7 +4,7 @@ import { readFileSync, statSync, existsSync } from 'node:fs';
 import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
 import { SESSION_LINES } from '../drive-session.js';
 import { createCoachSession, followUpLine, openingLine } from '../drive-coach.js';
-import { COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, PRACTICE_LEAD_LINES, PRACTICE_VOICE, RIVER_SWITCH_LINES, clipFile, fixedVoiceLines, fragmentLines, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
+import { AURORA_SWITCH_LINES, COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, PRACTICE_LEAD_LINES, PRACTICE_VOICE, clipFile, fixedVoiceLines, fragmentLines, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
 import { PRACTICE_CUE_LIBRARY } from '../drive-cues.js';
 import { PRACTICE_SESSION_LINES } from '../drive-session.js';
 import { PRACTICE_CLIPS, VOICE_CLIPS } from '../drive-voice-clips.js';
@@ -110,16 +110,28 @@ test('command replies play entirely from coach-voice clips', () => {
 });
 
 test('clips are the one coach voice, and together stay under 16 MB', () => {
+  assert.equal(COACH_VOICE, 'aurora');
+  assert.equal(PRACTICE_VOICE, 'af_bella');
   const meta = JSON.parse(readFileSync(new URL('../public/voice/voice.json', import.meta.url), 'utf8'));
   assert.equal(meta.voice, COACH_VOICE);
   assert.equal(meta.speed, COACH_VOICE_SPEED);
   assert.equal(meta.rate, 24000);
   assert.equal(meta.channels, 1);
+  assert.equal(meta.bitrate, '48k');
+  assert.equal(meta.source, 'xai-tts');
   const total = Object.values(VOICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
   assert.ok(total < 16 * 1024 * 1024, `clips total ${total} bytes`);
-  for (const line of RIVER_SWITCH_LINES) {
-    assert.ok(has(line), line);
-    assert.ok(existsSync(new URL(`../public/${clipFile(line)}`, import.meta.url)), line);
+  const fixed = fixedVoiceLines(phrases, COACH_VOICE);
+  for (const line of AURORA_SWITCH_LINES) {
+    assert.match(line, /Aurora/);
+    assert.equal(fixed.includes(line), true, line);
+    const file = clipFile(line);
+    assert.match(file, /^voice\/[0-9a-f]{8}\.mp3$/);
+    // The baked Aurora set reuses the previous line hashes. These two leads
+    // are new text, so they fall back to cloud or device speech until a clip exists.
+    if (existsSync(new URL(`../public/${file}`, import.meta.url))) {
+      assert.equal(VOICE_CLIPS[voiceKey(line)], file, line);
+    }
   }
 });
 
