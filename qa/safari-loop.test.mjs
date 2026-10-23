@@ -6,6 +6,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { synthesizeWords } from '../drive-dsp.js';
+import { MIC_SETTLE_MS, PLAYBACK_CUT_MS } from '../drive-mic-start.js';
 
 const PHRASE = 'Who is arriving? We are ready whenever you are.';
 const NEXT = 'Mia is here early.';
@@ -43,6 +44,7 @@ class FakeAudioContext {
     this.interruptions = 0;
     this.waiters = [];
     this.nodes = [];
+    this.currentTime = 0;
     this.clipDuration = FakeAudioContext.clipDuration;
     FakeAudioContext.latest = this;
   }
@@ -392,7 +394,7 @@ test('a denied microphone says how to continue and does not pretend to listen', 
   assert.ok(page.said.some(line => /microphone is blocked/i.test(line)), page.said.join(' | '));
 });
 
-test('audio coming back after a real interruption still answers the next phrase', async () => {
+test('a short route flicker stays live, and a held drop still answers the next phrase', async () => {
   FakeAudioContext.hangEnded = false;
   globalThis.__heardTranscript = 'next phrase';
   const page = installPage();
@@ -401,23 +403,30 @@ test('audio coming back after a real interruption still answers the next phrase'
   page.elements.get('startCoach').onclick();
   const audio = FakeAudioContext.latest;
   await waitUntilQuiet(audio);
-  await new Promise(resolve => setTimeout(resolve, 1700));
+  await new Promise(resolve => setTimeout(resolve, MIC_SETTLE_MS + 200));
+  const coach = globalThis.window.__liltDriveCoach;
   audio.interruptions = 1;
   audio.setState('interrupted');
-  await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(globalThis.window.__liltDriveCoach.status().paused, true);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(coach.status().paused, false, 'a flicker shorter than the route hold must not pause the coach');
   audio.endInterruption();
-  await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(globalThis.window.__liltDriveCoach.status().paused, false);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(coach.status().paused, false);
+  audio.interruptions = 1;
+  audio.setState('interrupted');
+  await new Promise(resolve => setTimeout(resolve, PLAYBACK_CUT_MS + 80));
+  assert.equal(coach.status().paused, true, 'a held interruption after startup pauses the coach');
+  audio.endInterruption();
+  await waitFor(() => coach.status().paused === false, 'audio coming back did not resume the coach');
   audio.stopNodes();
   const before = longClips(audio).length;
-  const coach = feed(phraseAudio());
+  feed(phraseAudio());
   await waitFor(() => coach.status().lineIndex === 1 && longClips(audio).length > before, `reply lost after the interruption. line=${page.elements.get('coachLine').textContent} paused=${coach.status().paused}`);
   assert.match(page.elements.get('coachLine').textContent, /^Next\./);
   audio.stopNodes();
 });
 
-test('a clip that never fires onended still lets the next phrase get a spoken reply', async () => {
+test('a clip that never fires onended and never moves the context clock still gets a spoken reply', async () => {
   FakeAudioContext.hangEnded = true;
   FakeAudioContext.clipDuration = 0.12;
   globalThis.__heardTranscript = PHRASE;
@@ -426,14 +435,17 @@ test('a clip that never fires onended still lets the next phrase get a spoken re
   ui.mountDriveCoach(deps());
   page.elements.get('startCoach').onclick();
   const audio = FakeAudioContext.latest;
+  const coach = globalThis.window.__liltDriveCoach;
   await waitFor(() => longClips(audio).some(source => source.started) && audio.processors > 0, 'opening never started');
-  await new Promise(resolve => setTimeout(resolve, 3500));
+  await waitFor(() => coach.speaking() === false, 'opening never released the microphone', 4000);
+  assert.equal(audio.currentTime, 0, 'this case is the stuck context clock, not a clock that caught up');
+  assert.equal(coach.status().paused, false);
   audio.stopNodes();
   const before = longClips(audio).length;
-  const coach = feed(phraseAudio());
+  feed(phraseAudio());
   await waitFor(
     () => /Heard you/.test(page.elements.get('coachHeard').textContent) && longClips(audio).length > before,
-    `still mute after the phrase. paused=${coach.status()?.paused} line=${page.elements.get('coachLine').textContent} heard=${page.elements.get('coachHeard').textContent} clips=${longClips(audio).length}`,
+    `still mute after the phrase. paused=${coach.status()?.paused} speaking=${coach.speaking()} line=${page.elements.get('coachLine').textContent} heard=${page.elements.get('coachHeard').textContent} clips=${longClips(audio).length}`,
     5000
   );
   assert.equal(coach.status().paused, false);
