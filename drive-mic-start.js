@@ -1,9 +1,15 @@
-// Decisions for the iPhone Safari microphone prompt.
+// Decisions for the iPhone Safari microphone prompt, and for playback after a take.
 // The sheet (and the route change when the mic opens) interrupts the audio
-// session before a track exists. These helpers keep that interruption from
-// pausing the coach or counting the opening line as finished.
+// session before a track exists. A later flicker does the same for a few dozen
+// milliseconds once the mic graph is hot. These helpers keep that flicker from
+// pausing the coach or counting a clip as finished, and they notice a clip that
+// played through even when the buffer never fires its end event.
 
 export const MIC_SETTLE_MS = 1500;
+// A real route drop (a call, the sheet) outlasts this. A playback flicker does not.
+export const PLAYBACK_CUT_MS = 700;
+// Wall-clock slack after the buffer's duration. The context clock is preferred.
+export const PLAYBACK_END_SLACK_MS = 80;
 
 /** Set play-and-record before capture so the route does not flip under the opening line. */
 export function usePlayAndRecord(audioSession) {
@@ -33,6 +39,35 @@ export function onContextState({ state, covered, hidden, stopped, userPaused, pa
   if (state === 'interrupted' || state === 'suspended') return covered ? 'resume-only' : 'pause';
   if (state === 'running' && paused) return 'resume-session';
   return 'ignore';
+}
+
+/** True once a non-running context has stayed down long enough to be a real cut. */
+export function interruptionHeld(elapsedMs, limitMs = PLAYBACK_CUT_MS) {
+  return elapsedMs >= limitMs;
+}
+
+/**
+ * True when a buffer source has played its clip.
+ * currentTime only counts while the source was not stopped: the clock keeps
+ * moving after stop() whenever the context is running. The wall clock covers
+ * a context that stays running but never fires onended and never advances
+ * currentTime. Time spent interrupted or suspended is not counted.
+ */
+export function bufferPlayed({
+  cut = false,
+  state = 'running',
+  elapsedSec = 0,
+  durationSec = 0,
+  suspendedMs = 0,
+  nowMs = 0,
+  startedMs = 0
+} = {}) {
+  if (cut) return false;
+  if (state === 'interrupted' || state === 'suspended' || state === 'closed') return false;
+  if (!(durationSec > 0)) return false;
+  if (elapsedSec + 0.03 >= durationSec) return true;
+  const wall = nowMs - startedMs - suspendedMs;
+  return wall >= durationSec * 1000 + PLAYBACK_END_SLACK_MS;
 }
 
 /** After getUserMedia settles. A cut-off opening line is spoken again once audio can run. */

@@ -1,9 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { synthesizeWords } from '../drive-dsp.js';
 import {
   afterMicRequest,
+  bufferPlayed,
+  interruptionHeld,
   micFailureCopy,
   onContextState,
+  MIC_SETTLE_MS,
+  PLAYBACK_CUT_MS,
   startupCoversInterruption,
   usePlayAndRecord
 } from '../drive-mic-start.js';
@@ -50,6 +55,19 @@ test('after startup a real interruption pauses, and running audio resumes it', (
   assert.equal(onContextState({ state: 'interrupted', covered: false, hidden: false, stopped: false, userPaused: true, paused: false }), 'ignore');
 });
 
+test('a short flicker is not a finished clip and not a dropped route', () => {
+  assert.equal(interruptionHeld(30), false);
+  assert.equal(interruptionHeld(PLAYBACK_CUT_MS - 1), false);
+  assert.equal(interruptionHeld(PLAYBACK_CUT_MS), true);
+  assert.equal(bufferPlayed({ state: 'running', elapsedSec: 0.35, durationSec: 0.35 }), true);
+  assert.equal(bufferPlayed({ cut: true, state: 'running', elapsedSec: 0.35, durationSec: 0.35 }), false);
+  assert.equal(bufferPlayed({ state: 'interrupted', elapsedSec: 0.35, durationSec: 0.35 }), false);
+  assert.equal(bufferPlayed({ state: 'suspended', elapsedSec: 0, durationSec: 0.35, nowMs: 500, startedMs: 0 }), false);
+  assert.equal(bufferPlayed({ state: 'running', elapsedSec: 0.1, durationSec: 0.35, nowMs: 200, startedMs: 0 }), false);
+  assert.equal(bufferPlayed({ state: 'running', elapsedSec: 0, durationSec: 0.35, nowMs: 500, startedMs: 0 }), true);
+  assert.equal(bufferPlayed({ state: 'running', elapsedSec: 0, durationSec: 0.35, nowMs: 500, startedMs: 0, suspendedMs: 400 }), false);
+});
+
 test('play-and-record is chosen once, before capture starts', () => {
   const session = { type: 'auto' };
   assert.equal(usePlayAndRecord(session), true);
@@ -80,6 +98,7 @@ function element() {
 
 class FakeAudioContext {
   static latest = null;
+  static holdEnded = false;
   constructor(options = {}) {
     this.sampleRate = options.sampleRate || 16000;
     this.state = 'suspended';
@@ -92,6 +111,8 @@ class FakeAudioContext {
     this.interruptions = 0;
     this.waiters = [];
     this.nodes = [];
+    this.holdEnded = FakeAudioContext.holdEnded;
+    this.gain = null;
     FakeAudioContext.latest = this;
   }
   addEventListener(type, fn) {
@@ -128,7 +149,9 @@ class FakeAudioContext {
     return Promise.resolve();
   }
   createGain() {
-    return { gain: { value: 0 }, connect() {}, disconnect() {} };
+    const node = { context: this, gain: { value: 0 }, connect() {}, disconnect() {} };
+    this.gain = node;
+    return node;
   }
   createBuffer(_channels, length, rate) {
     return { duration: length / rate, length };
@@ -145,6 +168,15 @@ class FakeAudioContext {
       start() {
         source.started = true;
         ctx.sources.push(source);
+        if (ctx.holdEnded) {
+          const duration = source.buffer?.duration || 0;
+          source.timer = setTimeout(() => {
+            if (source.ended) return;
+            ctx.currentTime += duration;
+          }, 60);
+          source.timer.unref?.();
+          return;
+        }
         source.timer = setTimeout(() => {
           if (source.ended) return;
           source.ended = true;
@@ -266,9 +298,9 @@ function longClips(audio) {
   return audio.sources.filter(source => source.buffer?.duration > 0.2);
 }
 
-async function waitFor(check, label) {
+async function waitFor(check, label, ms = 4000) {
   const start = Date.now();
-  while (Date.now() - start < 3000) {
+  while (Date.now() - start < ms) {
     if (check()) return;
     await new Promise(resolve => setTimeout(resolve, 15));
   }
@@ -317,7 +349,7 @@ test('Drive coach survives the mic sheet, an already granted mic, and a denial',
     audio.stopNodes();
   }
 
-  // Already granted: opening the mic still interrupts playback, and the line is spoken again.
+  // Already granted: a brief route flicker must not cut the opening off or pause the coach.
   {
     const ui = await freshCoach();
     page.media.calls = 0;
@@ -334,7 +366,7 @@ test('Drive coach survives the mic sheet, an already granted mic, and a denial',
         audio.interruptions = 1;
         audio.setState('interrupted');
         blip = Date.now();
-        setTimeout(() => audio.endInterruption(), 20);
+        setTimeout(() => audio.endInterruption(), 30);
       }, 5);
       watch.unref?.();
       return Promise.resolve(fakeStream());
@@ -342,14 +374,43 @@ test('Drive coach survives the mic sheet, an already granted mic, and a denial',
     ui.mountDriveCoach(deps(phrase));
     page.elements.get('startCoach').onclick();
     const audio = FakeAudioContext.latest;
-    await waitFor(() => blip && longClips(audio).some(source => source.started && source.buffer && !source.stopped), 'replay after the route change');
-    await new Promise(resolve => setTimeout(resolve, 350));
+    await waitFor(() => blip && longClips(audio).some(source => source.started), 'opening during the route flicker');
+    await new Promise(resolve => setTimeout(resolve, 400));
     assert.ok(blip, 'the route change ran during the opening line');
     assert.equal(page.media.calls, 1);
     assert.equal(page.media.typeAtCall[0], 'play-and-record');
     assert.equal(globalThis.window.__liltDriveCoach.status().paused, false);
     assert.equal(page.elements.get('coachResume').hidden, true);
-    assert.ok(longClips(audio).length >= 2, 'the cut-off opening line plays again');
+    assert.equal(longClips(audio).filter(source => source.stopped).length, 0, 'a short flicker leaves the opening playing');
+    audio.stopNodes();
+  }
+
+  // A route change that outlasts the clip still replays the opening, and does not pause during startup.
+  {
+    const ui = await freshCoach();
+    page.media.calls = 0;
+    let held = null;
+    page.media.devices.getUserMedia = () => {
+      page.media.calls += 1;
+      const audio = FakeAudioContext.latest;
+      const watch = setInterval(() => {
+        const live = longClips(audio).find(source => source.started && !source.ended);
+        if (!live) return;
+        clearInterval(watch);
+        audio.interruptions = 1;
+        audio.setState('interrupted');
+        held = Date.now();
+        setTimeout(() => audio.endInterruption(), PLAYBACK_CUT_MS + 120);
+      }, 5);
+      watch.unref?.();
+      return Promise.resolve(fakeStream());
+    };
+    ui.mountDriveCoach(deps(phrase));
+    page.elements.get('startCoach').onclick();
+    const audio = FakeAudioContext.latest;
+    await waitFor(() => held && longClips(audio).length >= 2, 'opening plays again after a held interruption');
+    assert.equal(globalThis.window.__liltDriveCoach.status().paused, false);
+    assert.equal(page.elements.get('coachResume').hidden, true);
     audio.stopNodes();
   }
 
@@ -380,6 +441,59 @@ test('Drive coach survives the mic sheet, an already granted mic, and a denial',
     assert.equal(page.media.calls, 1);
     assert.ok(page.said.some(line => /microphone is blocked/i.test(line)), page.said.join(' | '));
     FakeAudioContext.latest.stopNodes();
+  }
+});
+
+test('a finished take is coached out loud when the clip end event never arrives', async () => {
+  FakeAudioContext.holdEnded = true;
+  const page = installPage();
+  try {
+    const ui = await freshCoach();
+    page.media.devices.getUserMedia = () => Promise.resolve(fakeStream());
+    ui.mountDriveCoach({
+      ...deps('Hi there.'),
+      getLines: () => ['Hi there.', 'We are ready.']
+    });
+    page.elements.get('startCoach').onclick();
+    const audio = FakeAudioContext.latest;
+    const coach = globalThis.window.__liltDriveCoach;
+    await waitFor(() => coach.speaking() === false && audio.processors > 0, 'opening finishes without an end event');
+    assert.equal(coach.status().paused, false);
+    assert.ok(audio.gain.gain.value > 0 && audio.gain.gain.value < 0.01, 'capture stays connected without playing the microphone back');
+    const afterOpening = longClips(audio).length;
+    assert.ok(afterOpening >= 1, 'the opening line played from the audio context');
+    // One push while the post-speech guard is still up is discarded whole. Drain it, then speak.
+    coach.feed(new Float32Array(16000));
+    const speech = synthesizeWords([{ text: 'hi', ms: 800, f0: 210, f1: 380, f2: 2200, seed: 21, gapMs: 0 }]).samples;
+    const take = new Float32Array(speech.length + Math.floor(16000 * 1.6));
+    take.set(speech);
+    coach.feed(take);
+    await waitFor(() => {
+      const reply = longClips(audio).find(source => source.started && !source.ended && !source.stopped);
+      return longClips(audio).length > afterOpening && reply;
+    }, `spoken feedback after the take (clips ${longClips(audio).length}, heard "${page.elements.get('coachHeard').textContent}", said "${page.said.join(' | ')}")`);
+    const live = longClips(audio).find(source => source.started && !source.ended && !source.stopped);
+    audio.interruptions = 1;
+    audio.setState('interrupted');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(live.stopped, false, 'a flicker during the reply leaves it playing');
+    assert.equal(coach.status().paused, false);
+    audio.endInterruption();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    await waitFor(() => coach.speaking() === false, 'the reply finishes and listening starts again');
+    assert.equal(coach.status().paused, false);
+    // The mic-open settle window still covers a drop. Wait it out, then a held drop pauses.
+    await new Promise(resolve => setTimeout(resolve, MIC_SETTLE_MS));
+    audio.interruptions = 1;
+    audio.setState('interrupted');
+    await new Promise(resolve => setTimeout(resolve, PLAYBACK_CUT_MS + 80));
+    assert.equal(coach.status().paused, true, 'a held interruption after startup still pauses the coach');
+    audio.endInterruption();
+    await waitFor(() => coach.status().paused === false, 'audio coming back resumes the coach');
+    audio.stopNodes();
+  } finally {
+    FakeAudioContext.holdEnded = false;
+    FakeAudioContext.latest?.stopNodes();
   }
 });
 
