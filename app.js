@@ -114,9 +114,13 @@ function exportProgress(value=state){
   const blob=new Blob([JSON.stringify(value,null,2)],{type:'application/json'}),a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download='lilt-progress.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
-async function enterApp(user){
+function accountSnapshot(result){
+  if(!result||!Object.prototype.hasOwnProperty.call(result,'state'))return null;
+  return {state:result.state,version:result.version||0};
+}
+async function enterApp(user,saved){
   account=user;
-  const saved=await api('/api/state');
+  if(!saved)saved=await api('/api/state');
   const server=accountState(saved.state);
   state=server;stateVersion=saved.version||0;
   let pending;try{pending=JSON.parse(localStorage.getItem(pendingKey())||'null')}catch{}
@@ -156,11 +160,11 @@ async function startAuth(){
     el('authSubmit').disabled=true;el('authMode').disabled=true;
     try{
       const result=await api(`/api/auth/${authMode}`,{method:'POST',body:JSON.stringify({email,password})});
-      el('authPassword').value='';await enterApp(result.user);
+      el('authPassword').value='';await enterApp(result.user,accountSnapshot(result));
     }catch(error){showAuthError(error.message)}
     finally{el('authSubmit').disabled=false;el('authMode').disabled=false}
   };
-  try{const result=await api('/api/auth/me');await enterApp(result.user)}
+  try{const result=await api('/api/auth/me');await enterApp(result.user,accountSnapshot(result))}
   catch(error){el('authMessage').textContent=error.status===401?'':`Cannot reach your account: ${error.message}`}
   finally{el('authSubmit').disabled=false;el('authMode').disabled=false}
 }
@@ -176,12 +180,17 @@ function showMicStatus(message){const status=el('micStatus');if(status)status.te
 function microphoneAvailable(){return !!navigator.mediaDevices?.getUserMedia&&typeof MediaRecorder!=='undefined'}
 function clamp(v,min,max){ return Math.max(min,Math.min(max,v)); }
 function renderAll(){renderGoalOptions();renderToday();renderCourse();renderProgress();renderSettings();renderDrive();updateGoalUI()}
-function allCourseSessions(){return courseWeeks.flatMap(week=>week.sessions.map((session,dayIndex)=>({...session,id:`w${week.number}d${dayIndex+1}`,week:week.number,weekTitle:week.title,day:dayIndex+1,activities:session.drills.map((drill,index)=>({id:`w${week.number}d${dayIndex+1}-${index+1}`,drill}))})))}
+const courseSessions=courseWeeks.flatMap(week=>week.sessions.map((session,dayIndex)=>({...session,id:`w${week.number}d${dayIndex+1}`,week:week.number,weekTitle:week.title,day:dayIndex+1,activities:session.drills.map((drill,index)=>({id:`w${week.number}d${dayIndex+1}-${index+1}`,drill}))})));
+const lessonById=new Map(lessons.map(lesson=>[lesson.id,lesson]));
+const activityById=new Map();
+for(const session of courseSessions)session.activities.forEach((activity,index)=>activityById.set(activity.id,{session,index,activity}));
+function findLesson(id){return lessonById.get(id)}
+function allCourseSessions(){return courseSessions}
 function activityComplete(id){return state.completed.some(item=>item.activity===id)}
 function sessionComplete(session){return session.activities.every(activity=>activityComplete(activity.id))}
-function currentCourseSession(){const sessions=allCourseSessions();return sessions.find(session=>!sessionComplete(session))||sessions.at(-1)}
-function courseProgress(){const sessions=allCourseSessions(),total=sessions.reduce((sum,s)=>sum+s.activities.length,0),done=sessions.reduce((sum,s)=>sum+s.activities.filter(a=>activityComplete(a.id)).length,0);return {sessions,total,done,percent:total?Math.round(done/total*100):0}}
-function activityContext(activityId){for(const session of allCourseSessions()){const index=session.activities.findIndex(a=>a.id===activityId);if(index>=0)return {session,index,activity:session.activities[index]}}return null}
+function currentCourseSession(){return courseSessions.find(session=>!sessionComplete(session))||courseSessions.at(-1)}
+function courseProgress(){const total=courseSessions.reduce((sum,s)=>sum+s.activities.length,0),done=courseSessions.reduce((sum,s)=>sum+s.activities.filter(a=>activityComplete(a.id)).length,0);return {sessions:courseSessions,total,done,percent:total?Math.round(done/total*100):0}}
+function activityContext(activityId){return activityById.get(activityId)||null}
 function driveLogs(){return Array.isArray(state.driveLog)?state.driveLog:[]}
 function currentDrive(date=new Date()){
   const sessions=allCourseSessions();
@@ -204,10 +213,10 @@ function renderGoalOptions(){
 }
 
 function renderToday(){
-  const session=currentCourseSession(),minutes=session.activities.reduce((sum,a)=>sum+parseInt(lessons.find(l=>l.id===a.drill)?.duration||0),0);
+  const session=currentCourseSession(),minutes=session.activities.reduce((sum,a)=>sum+parseInt(findLesson(a.drill)?.duration||0),0);
   el('sessionTitle').textContent=`Week ${session.week} · Day ${session.day}: ${session.title}`; el('sessionDuration').textContent=`${minutes} MIN`;
   el('lessonPath').innerHTML = session.activities.map((activity,i)=>{
-    const lesson=lessons.find(l=>l.id===activity.drill),done=activityComplete(activity.id),active=!done&&session.activities.slice(0,i).every(a=>activityComplete(a.id));
+    const lesson=findLesson(activity.drill),done=activityComplete(activity.id),active=!done&&session.activities.slice(0,i).every(a=>activityComplete(a.id));
     return `<article class="lesson-card ${done?'complete':''} ${active?'active-card':''}"><span class="lesson-number">${String(i+1).padStart(2,'0')}</span><span class="status-icon">${done?'✓':active?'▶':'○'}</span><span class="kicker">${lesson.track}</span><h3>${lesson.title}</h3><p>${lesson.duration} · ${lesson.focus}</p><button data-lesson="${lesson.id}" data-activity="${activity.id}" aria-label="Start ${lesson.title}"></button></article>`;
   }).join('');
   const recent = attemptsThisWeek(); const driveMins=driveMinutesSince(Date.now()-7*864e5); const mins=Math.round(recent.reduce((s,a)=>s+(a.duration||0),0)/60)+driveMins;
@@ -227,7 +236,7 @@ function renderRestBanner(){
   const banner=el('restBanner'); if(!banner)return;
   banner.hidden=!known;
   if(!known)return;
-  const title=pause.lessonTitle||lessons.find(lesson=>lesson.id===pause.lesson)?.title||'this drill';
+  const title=pause.lessonTitle||findLesson(pause.lesson)?.title||'this drill';
   el('restBannerCopy').textContent=`You paused ${title} because comfort was ${pause.comfort} out of 5. Rest, or resume the same drill when your voice feels ready.`;
 }
 function resumePaused(){
@@ -241,7 +250,7 @@ function attemptsThisWeek(){ const since=Date.now()-7*864e5; return state.attemp
 function calculateStreak(){return streakFromDayKeys([...state.attempts.map(attempt=>dayOf(attempt.date)),...driveLogs().filter(entry=>entry.actualMinutes>0).map(entry=>dayOf(entry.date))])}
 
 function startLesson(id,activityId=null){
-  activeLesson=lessons.find(l=>l.id===id)||lessons[0];
+  activeLesson=findLesson(id)||lessons[0];
   activeActivityId=activityId;
   el('practiceTrack').textContent=activeLesson.track; el('practiceTitle').textContent=activeLesson.title; el('practiceWhy').textContent=activeLesson.why;
   el('practicePhrase').textContent=`“${activeLesson.phrase}”`; el('practiceCue').textContent=activeLesson.cue; el('stepDuration').textContent=activeLesson.duration.toUpperCase();
@@ -259,10 +268,10 @@ function showView(name){
 }
 
 function renderCourse(){
-  const progress=courseProgress(); el('courseProgressFill').style.width=`${progress.percent}%`;el('courseProgressText').textContent=`${progress.done} of ${progress.total} activities · ${progress.percent}%`;
+  const progress=courseProgress(),currentId=currentCourseSession().id; el('courseProgressFill').style.width=`${progress.percent}%`;el('courseProgressText').textContent=`${progress.done} of ${progress.total} activities · ${progress.percent}%`;
   el('courseWeeks').innerHTML=courseWeeks.map(week=>{
-    const sessions=progress.sessions.filter(s=>s.week===week.number),done=sessions.filter(sessionComplete).length,current=sessions.some(s=>s.id===currentCourseSession().id);
-    return `<article class="course-week ${current?'current':''}"><div class="week-number">${String(week.number).padStart(2,'0')}</div><div class="week-body"><span class="kicker">WEEK ${week.number} · ${done}/5 SESSIONS</span><h2>${week.title}</h2><p>${week.summary}</p><div class="session-list">${sessions.map(session=>{const complete=sessionComplete(session),next=session.id===currentCourseSession().id;return `<button class="session-row ${complete?'complete':''} ${next?'next':''}" data-session="${session.id}"><span>${complete?'✓':`DAY ${session.day}`}</span><b>${session.title}</b><small>${session.objective}</small><i>${complete?'Review':next?'Continue':'Preview'} →</i></button>`}).join('')}</div></div></article>`
+    const sessions=progress.sessions.filter(s=>s.week===week.number),done=sessions.filter(sessionComplete).length,current=sessions.some(s=>s.id===currentId);
+    return `<article class="course-week ${current?'current':''}"><div class="week-number">${String(week.number).padStart(2,'0')}</div><div class="week-body"><span class="kicker">WEEK ${week.number} · ${done}/5 SESSIONS</span><h2>${week.title}</h2><p>${week.summary}</p><div class="session-list">${sessions.map(session=>{const complete=sessionComplete(session),next=session.id===currentId;return `<button class="session-row ${complete?'complete':''} ${next?'next':''}" data-session="${session.id}"><span>${complete?'✓':`DAY ${session.day}`}</span><b>${session.title}</b><small>${session.objective}</small><i>${complete?'Review':next?'Continue':'Preview'} →</i></button>`}).join('')}</div></div></article>`
   }).join('');
   document.querySelectorAll('[data-session]').forEach(button=>button.onclick=()=>{const session=allCourseSessions().find(s=>s.id===button.dataset.session),activity=session.activities.find(a=>!activityComplete(a.id))||session.activities[0];startLesson(activity.drill,activity.id)});
 }
@@ -283,7 +292,7 @@ function renderDrive(){
   el('driveDurations').innerHTML=[20,30,40].map(min=>`<button type="button" class="filter-button ${min===driveMinutes?'active':''}" aria-pressed="${min===driveMinutes}" data-drive-minutes="${min}">${min} min</button>`).join('');
   document.querySelectorAll('[data-drive-minutes]').forEach(button=>button.onclick=()=>{driveMinutes=+button.dataset.driveMinutes;el('driveActual').value=String(driveMinutes);renderDrive()});
   el('driveLines').innerHTML=drive.lines.map((id,index)=>{
-    const lesson=lessons.find(item=>item.id===id); if(!lesson)return '';
+    const lesson=findLesson(id); if(!lesson)return '';
     return `<article class="drive-line"><b>Line ${index+1} · ${escapeHtml(lesson.title)}</b><p>“${escapeHtml(lesson.phrase)}”</p></article>`;
   }).join('');
   el('driveBlocks').innerHTML=drive.blocks.map((block,index)=>{
@@ -774,7 +783,7 @@ function setMenuOpen(open){
 function bindEvents(){
   document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.onclick=()=>showView(n.dataset.view));
   mountDriveCoach({
-    getLines(){const drive=currentDrive();return (drive?.lines||[]).map(id=>lessons.find(item=>item.id===id)?.phrase).filter(Boolean)},
+    getLines(){const drive=currentDrive();return (drive?.lines||[]).map(id=>findLesson(id)?.phrase).filter(Boolean)},
     getPlanned:()=>driveMinutes,
     getRoutine:()=>currentDrive()?.id||'week-1',
     getGoal:()=>presets[state.goal]||presets.balanced,
