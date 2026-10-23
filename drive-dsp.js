@@ -664,6 +664,8 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     const floor = Math.max(rawAmbient, 1e-5);
     const trackerSnr = spanRms > 0 ? 20 * Math.log10(Math.max(spanRms, 1e-5) / floor) : 0;
     const snrDb = trackerSnr;
+    // pcmSnrDb is the acoustic measure. snrDb above is the tracker floor, and the cue reader needs the acoustic one.
+    const pcmSnrDb = analysis.snrDb;
     // Silence is not noise. The status line is for a loud floor that was already
     // there, and only when the turn is long enough to judge.
     const tooNoisy = rawAmbient >= 0.12 && hopVoicedMs >= 200;
@@ -676,7 +678,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
     if (hopPeakMs < 100 && hopVoicedMs < 200) return null;
     if (!tooNoisy) noiseWarned = false;
     turns++;
-    const turn = { samples, sampleRate, duration, reason, ...analysis, snrDb, trackerSnr, tooNoisy, hopVoicedMs };
+    const turn = { samples, sampleRate, duration, reason, ...analysis, snrDb, trackerSnr, tooNoisy, hopVoicedMs, pcmSnrDb };
     onTurn?.(turn);
     return turn;
   }

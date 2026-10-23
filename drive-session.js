@@ -75,8 +75,8 @@ function pitchOf(hzs) {
   return median(hzs);
 }
 
-export function describeTake(samples, sampleRate = 16000) {
-  const analysis = analyzePcm(samples, sampleRate, { octave: true });
+export function describeTake(samples, sampleRate = 16000, ready = null) {
+  const analysis = ready?.frames ? ready : analyzePcm(samples, sampleRate, { octave: true });
   const voiced = analysis.frames.filter(frame => frame.voiced && Number.isFinite(frame.hz));
   const hzs = voiced.map(frame => frame.hz);
   const head = stats(hzs.slice(0, Math.floor(hzs.length * 0.4)));
@@ -152,7 +152,10 @@ export function readTurn(turn) {
     return { text: SESSION_LINES['too-noisy'], cueId: 'too-noisy', profile: null, tooNoisy: true };
   }
   if (!turn.samples?.length) return { text: '', cueId: null, profile: null, tooNoisy: false };
-  return describeTake(turn.samples, turn.sampleRate || 16000);
+  const ready = turn.frames && Number.isFinite(turn.pcmSnrDb)
+    ? { frames: turn.frames, noiseFloor: turn.noiseFloor, snrDb: turn.pcmSnrDb }
+    : null;
+  return describeTake(turn.samples, turn.sampleRate || 16000, ready);
 }
 
 export async function createDriveSession(options = {}) {

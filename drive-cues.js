@@ -117,7 +117,7 @@ export function problemPhrase(issues) {
   if (ordered.length === 1) return PROBLEM[ordered[0]];
   if (ordered.includes('drop') && (ordered.includes('heavy') || ordered.includes('chesty'))) {
     const quality = ordered.includes('heavy') ? 'heavy' : 'chesty';
-    return `dropped and ${PROBLEM[quality].replace('went ', 'went ')}`;
+    return `dropped and ${PROBLEM[quality]}`;
   }
   return ordered.map(issue => PROBLEM[issue]).join(' and ');
 }
