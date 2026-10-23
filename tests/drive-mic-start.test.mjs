@@ -176,8 +176,38 @@ class FakeAudioContext {
     this.setState('closed');
     return Promise.resolve();
   }
+  link(from, dest) {
+    if (from.output && from.output.inputs) {
+      const index = from.output.inputs.indexOf(from);
+      if (index >= 0) from.output.inputs.splice(index, 1);
+    }
+    from.output = dest || null;
+    if (!dest) return;
+    if (!dest.inputs) dest.inputs = [];
+    if (!dest.inputs.includes(from)) dest.inputs.push(from);
+  }
+  chainHas(node, pred) {
+    const seen = new Set();
+    const walk = current => {
+      if (!current || seen.has(current)) return false;
+      seen.add(current);
+      if (pred(current)) return true;
+      const inputs = current.inputs || [];
+      if (current.kind === 'script') return walk(inputs[inputs.length - 1]);
+      return inputs.some(input => walk(input));
+    };
+    return walk(node);
+  }
   createGain() {
-    const node = { context: this, gain: { value: 0 }, connect() {}, disconnect() {} };
+    const ctx = this;
+    const node = {
+      kind: 'gain',
+      context: this,
+      gain: { value: 0 },
+      inputs: [],
+      connect(dest) { ctx.link(node, dest); },
+      disconnect() { ctx.link(node, null); }
+    };
     this.gain = node;
     return node;
   }
@@ -194,8 +224,8 @@ class FakeAudioContext {
       ended: false,
       stopped: false,
       dests: new Set(),
-      connect(dest) { source.dests.add(dest); },
-      disconnect() { source.dests.clear(); },
+      connect(dest) { ctx.link(source, dest); source.dests.add(dest); },
+      disconnect() { ctx.link(source, null); source.dests.clear(); },
       onended: null,
       start() {
         source.started = true;
@@ -221,7 +251,16 @@ class FakeAudioContext {
     return source;
   }
   createMediaStreamSource() {
-    const node = { channelCount: 2, channelCountMode: 'max', connect() {}, disconnect() {} };
+    const ctx = this;
+    const node = {
+      kind: 'source',
+      liveMic: true,
+      inputs: [],
+      channelCount: 2,
+      channelCountMode: 'max',
+      connect(dest) { ctx.link(node, dest); },
+      disconnect() { ctx.link(node, null); }
+    };
     this.mediaSource = node;
     return node;
   }
@@ -230,6 +269,8 @@ class FakeAudioContext {
     this.scriptInputs = inputChannels;
     const ctx = this;
     const node = {
+      kind: 'script',
+      inputs: [],
       disconnected: false,
       inputChannels,
       channelCount: inputChannels,
@@ -255,8 +296,9 @@ class FakeAudioContext {
           const monoVoice = !explicitMono && (node.channelCount === 1 || node.inputChannels === 1);
           const stereo = ctx.iosMic && !explicitMono && !monoVoice;
           const clipPlaying = ctx.sources.some(source => source.started && !source.stopped && !source.ended && !source.loop && (source.buffer?.duration || 0) > 0.2);
-          const clocked = ctx.sources.some(source => source.loop && source.started && !source.stopped && !source.ended && source.dests?.has(node));
-          const pulling = !ctx.iosMic || clipPlaying || clocked;
+          const micLive = ctx.chainHas(node, item => item.liveMic);
+          const clocked = ctx.chainHas(node, item => item.loop && item.started && !item.stopped && !item.ended);
+          const pulling = !ctx.iosMic || (micLive && (clipPlaying || clocked));
           for (let n = 0; n < blocks; n++) {
             const read = new Set();
             let channel0 = null;
@@ -576,7 +618,8 @@ test('iPhone Safari hears two sentences through the mic graph and answers out lo
     assert.ok(longClips(audio).length >= 1, 'the opening line played from the audio context');
     assert.notEqual(audio.mediaSource?.channelCountMode, 'explicit');
     const script = audio.nodes.find(node => node.onaudioprocess);
-    assert.ok(audio.sources.some(source => source.loop && source.started && !source.stopped && source.dests.has(script)), 'after the prompt, only a looping source keeps the mic processor alive');
+    assert.ok(audio.chainHas(script, item => item.liveMic), 'the silent keep-alive replaced the microphone');
+    assert.ok(audio.chainHas(script, item => item.loop && item.started && !item.stopped), 'after the prompt, only a summed looping source keeps the mic processor alive');
     for (let round = 0; round < 2; round++) {
       const before = longClips(audio).length;
       const postedBefore = audio.voiceSamplesPosted;

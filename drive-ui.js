@@ -907,15 +907,23 @@ function attachScriptCapture(ctx, generation, { direct }) {
       if (output.length) output[0] = 1e-4;
     }
   };
-  sourceNode.connect(processor);
   // iOS runs this callback only into the destination, and only while some source
-  // is still scheduled. The prompt is a one-shot, so without this loop her speech
-  // never reaches the turn detector. The buffer is silence, it is not played, and
-  // it is not the clip watchdog's source, so a flicker cannot stop it mid-take.
+  // is still scheduled. The prompt is a one-shot, so a silent loop keeps the
+  // processor alive after it. Safari keeps only the last node connected to a
+  // ScriptProcessor, so connecting that loop after the mic replaces her voice
+  // with silence. Sum them first. The processor then has one input, and that
+  // input is still the microphone. The loop is not played and is not the clip
+  // watchdog's source, so a flicker cannot stop it mid-take.
   if (direct) {
+    const mix = ctx.createGain();
+    mix.gain.value = 1;
+    sourceNode.connect(mix);
     const clockSource = ensureCaptureClock(ctx);
     try { clockSource.disconnect(); } catch { /* not connected yet */ }
-    clockSource.connect(processor);
+    clockSource.connect(mix);
+    mix.connect(processor);
+  } else {
+    sourceNode.connect(processor);
   }
   processor.connect(direct ? ctx.destination : outputGain(ctx));
 }

@@ -115,8 +115,38 @@ class FakeAudioContext {
     this.setState('closed');
     return Promise.resolve();
   }
+  link(from, dest) {
+    if (from.output && from.output.inputs) {
+      const index = from.output.inputs.indexOf(from);
+      if (index >= 0) from.output.inputs.splice(index, 1);
+    }
+    from.output = dest || null;
+    if (!dest) return;
+    if (!dest.inputs) dest.inputs = [];
+    if (!dest.inputs.includes(from)) dest.inputs.push(from);
+  }
+  chainHas(node, pred) {
+    const seen = new Set();
+    const walk = current => {
+      if (!current || seen.has(current)) return false;
+      seen.add(current);
+      if (pred(current)) return true;
+      const inputs = current.inputs || [];
+      if (current.kind === 'script') return walk(inputs[inputs.length - 1]);
+      return inputs.some(input => walk(input));
+    };
+    return walk(node);
+  }
   createGain() {
-    const node = { context: this, gain: { value: 1 }, connect() {}, disconnect() {} };
+    const ctx = this;
+    const node = {
+      kind: 'gain',
+      context: this,
+      gain: { value: 1 },
+      inputs: [],
+      connect(dest) { ctx.link(node, dest); },
+      disconnect() { ctx.link(node, null); }
+    };
     this.gain = node;
     return node;
   }
@@ -135,8 +165,8 @@ class FakeAudioContext {
       startedAt: 0,
       stoppedAt: 0,
       dest: null,
-      connect(dest) { source.dest = dest; },
-      disconnect() { source.dest = null; },
+      connect(dest) { source.dest = dest; ctx.link(source, dest); },
+      disconnect() { source.dest = null; ctx.link(source, null); },
       onended: null,
       start() {
         source.started = true;
@@ -156,12 +186,16 @@ class FakeAudioContext {
     return source;
   }
   createMediaStreamSource() {
+    const ctx = this;
     const node = {
+      kind: 'source',
+      liveMic: true,
+      inputs: [],
       channelCount: 2,
       channelCountMode: 'max',
       channelInterpretation: 'speakers',
-      connect() {},
-      disconnect() {}
+      connect(dest) { ctx.link(node, dest); },
+      disconnect() { ctx.link(node, null); }
     };
     this.mediaSource = node;
     return node;
@@ -171,6 +205,8 @@ class FakeAudioContext {
     this.scriptInputs = inputChannels;
     const ctx = this;
     const node = {
+      kind: 'script',
+      inputs: [],
       disconnected: false,
       inputChannels,
       output: new Float32Array(2048),
@@ -191,9 +227,10 @@ class FakeAudioContext {
               numberOfChannels: node.inputChannels,
               getChannelData(channel) {
                 const out = new Float32Array(size);
+                const micLive = ctx.chainHas(node, item => item.liveMic);
                 const clipPlaying = ctx.sources.some(source => source.started && !source.stopped && !source.ended && !source.loop && (source.buffer?.duration || 0) > 0.2);
-                const clocked = ctx.sources.some(source => source.loop && source.started && !source.stopped && !source.ended && source.dest === node);
-                if (!clipPlaying && !clocked) return out;
+                const clocked = ctx.chainHas(node, item => item.loop && item.started && !item.stopped && !item.ended);
+                if (!micLive || (!clipPlaying && !clocked)) return out;
                 if (!ctx.deliverMic || channel !== 0) return out;
                 const start = ctx.micPos;
                 const end = Math.min(ctx.micQueue.length, start + size);
