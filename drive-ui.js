@@ -4,7 +4,7 @@ import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { planSpeech, voiceKey } from './drive-voice.js';
 import { VOICE_CLIPS } from './drive-voice-clips.js';
-import { afterMicRequest, micFailureCopy, onContextState, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
+import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
 export { createDriveSession };
 
@@ -47,7 +47,16 @@ let micOpenedAt = 0;
 let lastFrameAt = 0;
 let starting = false;
 let recovering = null;
+let routePauseTimer = null;
+// Far below the noise floor. Zero is dropped by Safari, so the capture graph never runs.
+const KEEP_ALIVE_GAIN = 0.0001;
 const RAW_MIC = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
+
+function clearRoutePause() {
+  if (!routePauseTimer) return;
+  clearTimeout(routePauseTimer);
+  routePauseTimer = null;
+}
 
 function el(id) {
   return document.getElementById(id);
@@ -141,22 +150,40 @@ function ensureContext() {
   }
   if (!contextBound) {
     contextBound = true;
+    const picture = () => ({
+      state: audioContext.state,
+      covered: startupCoversInterruption({ awaitingPermission, starting, micOpenedAt, now: Date.now() }),
+      hidden: hiddenByPage || document.visibilityState === 'hidden',
+      stopped: false,
+      userPaused,
+      paused: session.status().paused
+    });
+    // Look again while the route stays down. A flicker ends before this and is ignored.
+    // A drop that begins during startup is paused only once startup no longer covers it.
+    const scheduleRouteCheck = () => {
+      if (routePauseTimer) return;
+      routePauseTimer = setTimeout(() => {
+        routePauseTimer = null;
+        if (!session || session.status().stopped || !audioContext) return;
+        const still = onContextState(picture());
+        if (still === 'pause') {
+          session.interrupt(audioContext.state);
+          show('The coach is paused.', 'Audio was interrupted. It resumes when the route is back.');
+        } else if (still === 'resume-only') scheduleRouteCheck();
+      }, PLAYBACK_CUT_MS);
+      routePauseTimer.unref?.();
+    };
     audioContext.onstatechange = () => {
       if (!session || session.status().stopped) return;
-      const action = onContextState({
-        state: audioContext.state,
-        covered: startupCoversInterruption({ awaitingPermission, starting, micOpenedAt, now: Date.now() }),
-        hidden: hiddenByPage || document.visibilityState === 'hidden',
-        stopped: false,
-        userPaused,
-        paused: session.status().paused
-      });
+      const action = onContextState(picture());
       // resume() during the sheet resolves when the sheet goes away, which is what lets speech start.
-      if (action === 'resume-only' || action === 'pause') audioContext.resume().catch(() => {});
-      if (action === 'pause') {
-        session.interrupt(audioContext.state);
-        show('The coach is paused.', 'Audio was interrupted. It resumes when the route is back.');
-      } else if (action === 'resume-session') {
+      if (action === 'resume-only' || action === 'pause') {
+        audioContext.resume().catch(() => {});
+        scheduleRouteCheck();
+        return;
+      }
+      clearRoutePause();
+      if (action === 'resume-session') {
         session.resumeAfterInterrupt();
         show(session.prompt() || 'The coach is listening.', lastFeedback);
       }
@@ -198,13 +225,14 @@ function outputGain(ctx) {
   if (!silentGain || silentGain.context !== ctx) {
     silentGain?.disconnect();
     silentGain = ctx.createGain();
-    silentGain.gain.value = 0;
+    silentGain.gain.value = KEEP_ALIVE_GAIN;
     silentGain.connect(ctx.destination);
   }
   return silentGain;
 }
 
 function releaseGraph() {
+  clearRoutePause();
   micGeneration += 1;
   processor?.disconnect();
   sourceNode?.disconnect();
@@ -253,9 +281,11 @@ function bufferFor(ctx, url) {
 
 function whenRunning(ctx, token) {
   if (!ctx || ctx.state === 'closed' || token !== speechToken) return Promise.resolve(false);
-  if (ctx.state === 'running') return Promise.resolve(true);
+  // iOS can report running and still be silent until resume() is called again.
   let resumePromise;
   try { resumePromise = ctx.resume(); } catch (error) { resumePromise = Promise.reject(error); }
+  if (resumePromise && typeof resumePromise.catch === 'function') resumePromise.catch(() => {});
+  if (ctx.state === 'running') return Promise.resolve(true);
   return new Promise(resolve => {
     let settled = false;
     const finish = ok => {
@@ -297,13 +327,37 @@ function startBuffer(ctx, buffer, token) {
     activeSource = source;
     let settled = false;
     let cut = false;
+    let completed = false;
+    let downSince = 0;
+    let suspendedMs = 0;
+    const startedMs = Date.now();
+    const startedAt = ctx.currentTime || 0;
+    const duration = buffer.duration || 0;
     const finish = ok => {
       if (settled) return;
       settled = true;
+      clearInterval(watch);
       ctx.removeEventListener?.('statechange', onState);
       if (activeSource === source) activeSource = null;
       resolve(ok);
     };
+    const noteDown = () => {
+      if (!downSince) downSince = Date.now();
+    };
+    const noteUp = () => {
+      if (!downSince) return;
+      suspendedMs += Date.now() - downSince;
+      downSince = 0;
+    };
+    const played = () => bufferPlayed({
+      cut,
+      state: ctx.state,
+      elapsedSec: (ctx.currentTime || 0) - startedAt,
+      durationSec: duration,
+      suspendedMs,
+      nowMs: Date.now(),
+      startedMs
+    });
     const onState = () => {
       if (token !== speechToken || ctx.state === 'closed') {
         cut = true;
@@ -311,15 +365,60 @@ function startBuffer(ctx, buffer, token) {
         finish(false);
         return;
       }
-      // The permission sheet and the capture route both move the context here and stop the source.
+      // Leave the source running through a flicker. resume() brings the route back
+      // without a new tap. A held interruption fails the clip so the line can be said again.
       if (ctx.state === 'interrupted' || ctx.state === 'suspended') {
+        noteDown();
+        try {
+          const pending = ctx.resume();
+          if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+        } catch { /* already resuming */ }
+        return;
+      }
+      noteUp();
+    };
+    source.onended = () => {
+      if (completed) {
+        finish(true);
+        return;
+      }
+      // Ended while the route was still down: the sheet or the route change stopped it.
+      const down = ctx.state === 'interrupted' || ctx.state === 'suspended' || ctx.state === 'closed';
+      if (down || cut || token !== speechToken) {
+        cut = true;
+        finish(false);
+        return;
+      }
+      finish(true);
+    };
+    ctx.addEventListener?.('statechange', onState);
+    // onended often never fires once a live microphone shares this context, which
+    // used to leave the coach "speaking" forever and throw her take away.
+    const watch = setInterval(() => {
+      if (settled) return;
+      if (token !== speechToken || ctx.state === 'closed') {
         cut = true;
         try { source.stop(); } catch { /* already stopped */ }
         finish(false);
+        return;
       }
-    };
-    source.onended = () => finish(!cut && token === speechToken && ctx.state !== 'interrupted' && ctx.state !== 'suspended');
-    ctx.addEventListener?.('statechange', onState);
+      if (ctx.state === 'interrupted' || ctx.state === 'suspended') {
+        noteDown();
+        if (downSince && interruptionHeld(Date.now() - downSince)) {
+          cut = true;
+          try { source.stop(); } catch { /* already stopped */ }
+          finish(false);
+        }
+        return;
+      }
+      noteUp();
+      if (played()) {
+        completed = true;
+        try { source.stop(); } catch { /* already stopped, or it never fires onended */ }
+        finish(true);
+      }
+    }, 40);
+    watch.unref?.();
     try { source.start(); } catch { finish(false); }
   });
 }
@@ -712,6 +811,14 @@ async function judgeTurn(turn) {
   if (plan.follow && session && !session.status().stopped && !hiddenByPage) await say(plan.follow);
 }
 
+function forceMono(node) {
+  if (!node) return node;
+  try { node.channelCount = 1; } catch { /* some nodes fix the count */ }
+  try { node.channelCountMode = 'explicit'; } catch { /* ignore */ }
+  try { node.channelInterpretation = 'speakers'; } catch { /* ignore */ }
+  return node;
+}
+
 function pushCaptured(input, ctx) {
   lastFrameAt = Date.now();
   if (session && detector) detector.setExpectation(expectedVoicedMs(session.prompt()));
@@ -725,32 +832,41 @@ function pushCaptured(input, ctx) {
 }
 
 async function attachCapture(ctx, generation) {
-  sourceNode = ctx.createMediaStreamSource(stream);
+  sourceNode = forceMono(ctx.createMediaStreamSource(stream));
+  // The mic source has to reach the destination. A branch that ends at a silent
+  // node is dropped, and the worklet or script processor never runs.
+  const keepAlive = outputGain(ctx);
+  try { sourceNode.connect(keepAlive); } catch { /* already connected */ }
   if (ctx.audioWorklet?.addModule) {
     try {
       if (!workletReady) workletReady = ctx.audioWorklet.addModule('drive-capture-worklet.js');
       await workletReady;
-      const node = new AudioWorkletNode(ctx, 'drive-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
-      processor = node;
+      let node;
+      try {
+        node = new AudioWorkletNode(ctx, 'drive-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' });
+      } catch {
+        node = new AudioWorkletNode(ctx, 'drive-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+      }
+      processor = forceMono(node);
       node.port.onmessage = event => {
         if (generation !== micGeneration) return;
         const channel = event.data;
         if (channel?.length) pushCaptured(channel, ctx);
       };
       sourceNode.connect(node);
-      node.connect(outputGain(ctx));
+      node.connect(keepAlive);
       return;
     } catch {
       workletReady = null;
     }
   }
-  processor = ctx.createScriptProcessor(2048, 1, 1);
+  processor = forceMono(ctx.createScriptProcessor(2048, 1, 1));
   processor.onaudioprocess = event => {
     const input = event.inputBuffer.getChannelData(0);
     pushCaptured(input, ctx);
   };
   sourceNode.connect(processor);
-  processor.connect(outputGain(ctx));
+  processor.connect(keepAlive);
 }
 
 async function listen(alreadyOpen) {
@@ -915,6 +1031,7 @@ export function mountDriveCoach(deps) {
       const audio = sampleRate === SAMPLE_RATE ? samples : resampleLinear(samples, sampleRate, SAMPLE_RATE);
       detector?.push(audio);
     },
+    speaking: () => speaking,
     status: () => session?.status() || null,
     lastFeedback: () => lastFeedback,
     audioContext: () => audioContext,
