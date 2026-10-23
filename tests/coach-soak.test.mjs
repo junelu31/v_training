@@ -67,7 +67,7 @@ test('a 40 minute coach loop keeps a fixed buffer and a capped log', async () =>
   const noise = makeRoadNoise(8, 16000, 21);
   let now = Date.parse('2026-10-22T08:00:00Z');
   const session = createCoachSession({ plannedMinutes: 40, routineId: 'week-4', lines: ['Hi there'], now, id: 'soak' });
-  const goal = { pitch: [175, 225], brightness: [-8, -4] };
+  const goal = { pitch: [160, 210], brightness: [-16, -10] };
   let turns = 0;
   const detector = createTurnDetector({
     onTurn(turn) {

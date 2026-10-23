@@ -11,7 +11,7 @@ test('the opening line reads the first phrase aloud', () => {
   assert.equal(openingLine(lines[1], { resumed: true }), 'The coach is listening again. Match how I say this: Mia is here early.');
   assert.equal(openingLine(lines[0], { voice: PRACTICE_VOICE }), 'Drive coach is on. Match this lighter practice voice: Who is arriving? We are ready whenever you are.');
   assert.equal(openingLine('', { voice: PRACTICE_VOICE }), 'Drive coach is on. Talk in this lighter practice voice whenever you are ready.');
-  assert.equal(openingLine(lines[0], { switched: true }), 'Back to River. Match how I say this: Who is arriving? We are ready whenever you are.');
+  assert.equal(openingLine(lines[0], { switched: true }), 'Back to Aurora. Match how I say this: Who is arriving? We are ready whenever you are.');
 });
 
 test('a clear take moves to the next phrase and says it', () => {

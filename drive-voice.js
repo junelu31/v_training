@@ -1,34 +1,39 @@
 import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
 import { PRACTICE_SESSION_LINES, SESSION_LINES } from './drive-session.js';
 
-// Spoken lines for Drive coach. Every fixed line has a pre-rendered clip under
-// public/voice, in the selected Kokoro voice. That voice is the sound to imitate.
-// River clips stay at voice/<hash>.mp3. The practice voice uses voice/<id>/<hash>.mp3.
-// Re-render with VOICE set to the same id. FORCE=1 rebuilds clips that already exist.
+// Spoken lines for Drive coach. Every fixed line has a pre-rendered clip.
+// That clip is the sound to imitate.
+// Coach clips are Grok Aurora (xAI TTS, voice_id aurora) at voice/<hash>.mp3.
+// Render them with scripts/render_aurora_tts.mjs. Practice clips stay Kokoro
+// af_bella at voice/af_bella/<hash>.mp3, rendered with scripts/render_voice.py.
+// FORCE=1 rebuilds clips that already exist.
 // A line that names a word or a count is stitched from fragment clips in that same
 // voice: each word of the drive phrases, each problem phrase, the word "and", the
 // summary words, and the numbers 0 to 199.
 // Only a part no fragment covers falls back to cloud speech or the device voice.
 
-// af_river: the long-term target, and the default. On a paragraph at speed 0.95
-// it sits near 173 Hz, with a thicker tone (H1-H2 about -2 dB).
-export const COACH_VOICE = 'af_river';
+// aurora: the long-term target, and the default. On a multi-sentence sample at
+// speed 0.95 (the same analyzePcm path as the app) the median pitch is about
+// 171.9 Hz (p10 ~155, p90 ~250), brightness median about -13.6 dB
+// (p10 ~-25.4, p90 ~4.6), and H1-H2 median about -5.9 dB.
+export const COACH_VOICE = 'aurora';
 export const COACH_VOICE_SPEED = 0.95;
-// af_bella: temporary practice voice. Same paragraph at speed 0.95, about 212 Hz
-// and a lighter tone (H1-H2 about +8 dB). af_sky is lower (about 152 Hz) and
-// darker (centroid near 990 Hz), so the gap from a masculine start is smaller.
+// af_bella: temporary practice voice. Same kind of paragraph at speed 0.95,
+// about 212 Hz and a lighter tone (H1-H2 about +8 dB). af_sky is lower
+// (about 152 Hz) and darker (centroid near 990 Hz), so the gap from a
+// masculine start is smaller.
 export const PRACTICE_VOICE = 'af_bella';
 export const DRIVE_VOICE_STORAGE_KEY = 'lilt-drive-voice';
 // The iPhone endurance gate stores the same choice under this name.
 export const COACH_VOICE_STORAGE_KEY = 'lilt-coach-voice';
 
 export const DRIVE_VOICES = {
-  af_river: {
-    id: 'af_river',
-    button: 'River',
+  aurora: {
+    id: 'aurora',
+    button: 'Aurora',
     detail: 'The voice to land on',
-    kicker: 'DRIVE COACH · RIVER',
-    note: 'This is River, the voice to land on. Switch to the practice voice when you want a higher, lighter target.',
+    kicker: 'DRIVE COACH · AURORA',
+    note: 'This is Aurora, the voice to land on. Switch to the practice voice when you want a higher, lighter target.',
     switchTo: 'Switch to practice voice'
   },
   af_bella: {
@@ -36,8 +41,8 @@ export const DRIVE_VOICES = {
     button: 'Easier practice',
     detail: 'Higher and lighter, for now',
     kicker: 'DRIVE COACH · PRACTICE VOICE',
-    note: 'This is the temporary practice voice. It sits higher and lighter than River, so the gap is easier to hear. Match this voice. River stays the one to land on.',
-    switchTo: 'Switch to River'
+    note: 'This is the temporary practice voice. It sits higher and lighter than Aurora, so the gap is easier to hear. Match this voice. Aurora stays the one to land on.',
+    switchTo: 'Switch to Aurora'
   }
 };
 export const DRIVE_VOICE_ORDER = [COACH_VOICE, PRACTICE_VOICE];
@@ -91,10 +96,10 @@ export const LEAD_LINES = [
   'Back to lines.'
 ];
 
-// Spoken only when she switches back to River during a drive.
-export const RIVER_SWITCH_LINES = [
-  'Back to River. Match how I say this:',
-  'Back to River. Talk in this voice whenever you are ready.'
+// Spoken only when she switches back to Aurora during a drive.
+export const AURORA_SWITCH_LINES = [
+  'Back to Aurora. Match how I say this:',
+  'Back to Aurora. Talk in this voice whenever you are ready.'
 ];
 
 export const PRACTICE_LEAD_LINES = [
@@ -166,7 +171,7 @@ function stitch(text, hasClip) {
 export function fixedVoiceLines(phrases = [], voice = COACH_VOICE) {
   const practice = voice === PRACTICE_VOICE;
   const cues = Object.values(practice ? PRACTICE_CUE_LIBRARY : CUE_LIBRARY).flatMap(entry => entry.variants);
-  const leads = practice ? PRACTICE_LEAD_LINES : [...LEAD_LINES, ...RIVER_SWITCH_LINES];
+  const leads = practice ? PRACTICE_LEAD_LINES : [...LEAD_LINES, ...AURORA_SWITCH_LINES];
   const session = Object.values(practice ? PRACTICE_SESSION_LINES : SESSION_LINES);
   const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases];
   const seen = new Map();

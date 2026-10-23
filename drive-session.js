@@ -14,7 +14,7 @@ export const SESSION_LINES = {
   'too-noisy': 'This one is too noisy to coach.'
 };
 
-// Whole-take lines for the temporary practice voice. Higher and lighter than River.
+// Whole-take lines for the temporary practice voice. Higher and lighter than Aurora.
 export const PRACTICE_SESSION_LINES = {
   'pitch-low': 'Hum the next word up in the lighter part of your voice, and keep it where I say it.',
   'pitch-drop-end': 'Lift the end of the word and keep it light, the way I finish it.',
@@ -24,7 +24,7 @@ export const PRACTICE_SESSION_LINES = {
   'too-noisy': 'This one is too noisy to coach.'
 };
 
-export function sessionLine(cueId, voice = 'af_river') {
+export function sessionLine(cueId, voice = 'aurora') {
   const lines = voice === 'af_bella' ? PRACTICE_SESSION_LINES : SESSION_LINES;
   return lines[cueId] || '';
 }
@@ -90,7 +90,7 @@ function pitchOf(hzs) {
   return median(hzs);
 }
 
-export function describeTake(samples, sampleRate = 16000, voice = 'af_river') {
+export function describeTake(samples, sampleRate = 16000, voice = 'aurora') {
   const analysis = analyzePcm(samples, sampleRate, { octave: true });
   const voiced = analysis.frames.filter(frame => frame.voiced && Number.isFinite(frame.hz));
   const hzs = voiced.map(frame => frame.hz);
@@ -161,7 +161,7 @@ export function describeTake(samples, sampleRate = 16000, voice = 'af_river') {
 }
 
 /** The line the driver hears. The suite and the live turn both call this on the trimmed turn. */
-export function readTurn(turn, voice = 'af_river') {
+export function readTurn(turn, voice = 'aurora') {
   if (!turn) return { text: '', cueId: null, profile: null, tooNoisy: false };
   if (turn.tooNoisy || turn.reason === 'noise') {
     return { text: sessionLine('too-noisy', voice), cueId: 'too-noisy', profile: null, tooNoisy: true };

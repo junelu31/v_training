@@ -82,8 +82,8 @@ export const CUE_LIBRARY = {
   }
 };
 
-// Cues for the temporary practice voice (Kokoro af_bella), not for River.
-// Bella sits higher and lighter than River. These lines name that placement:
+// Cues for the temporary practice voice (Kokoro af_bella), not for Aurora.
+// Bella sits higher and lighter than Aurora. These lines name that placement:
 // pitch in the lighter part of the voice, a thin start, and the tongue a little
 // farther forward. They are not notes about sounding feminine.
 export const PRACTICE_CUE_LIBRARY = {
@@ -181,7 +181,7 @@ const PROBLEM = {
   breath: 'went breathy'
 };
 
-export function cueLine(issue, cursor, voice = 'af_river') {
+export function cueLine(issue, cursor, voice = 'aurora') {
   const library = voice === 'af_bella' ? PRACTICE_CUE_LIBRARY : CUE_LIBRARY;
   const list = library[issue]?.variants || library.held.variants;
   const index = ((cursor % list.length) + list.length) % list.length;

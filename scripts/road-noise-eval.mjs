@@ -8,7 +8,7 @@ import { classifyUtterance } from '../drive-coach.js';
 
 const dir = process.env.DRIVE_AUDIO_DIR || '/tmp/lilt-audio';
 const prompt = "Hi, my name is June, I'd like a medium latte, please.";
-const goal = { pitch: [175, 225], brightness: [-8, -4] };
+const goal = { pitch: [160, 210], brightness: [-16, -10] };
 const files = [
   ['clean', 'take1_20261021_2334_1fad.f32'],
   ['snr20', 'take1_road_snr20_bcde.f32'],
