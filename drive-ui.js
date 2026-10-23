@@ -4,6 +4,7 @@ import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { planSpeech, voiceKey } from './drive-voice.js';
 import { VOICE_CLIPS } from './drive-voice-clips.js';
+import { afterMicRequest, micFailureCopy, onContextState, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
 export { createDriveSession };
 
@@ -12,7 +13,7 @@ let silentGain = null;
 let detector = null;
 let session = null;
 let speaking = false;
-let player = null;
+let activeSource = null;
 let sourceNode = null;
 let processor = null;
 let stream = null;
@@ -30,15 +31,17 @@ let captureScratch = new Float32Array(0);
 let stayAwake = null;
 let visibilityHandler = null;
 let workletReady = null;
+let awaitingPermission = false;
+const clipBuffers = new WeakMap();
 let judging = false;
 let speechToken = 0;
 const SPEECH_TAIL_MS = 250;
 let levelFrame = 0;
 let levelPeak = 0;
 const TURN_TIMEOUT_MS = 6000;
-// Granting the microphone on iOS switches the audio session, which fires devicechange and
-// can briefly interrupt the AudioContext. Route events inside this window are part of startup.
-const SETTLE_MS = 1500;
+// How long a resume() may sit on the permission sheet before this attempt gives up.
+// The caller speaks the line again after the sheet closes.
+const RESUME_WAIT_MS = 12000;
 const FLOW_MS = 1200;
 let micOpenedAt = 0;
 let lastFrameAt = 0;
@@ -132,24 +135,28 @@ function ensureStayAwake() {
 function ensureContext() {
   if (!audioContext) {
     const Ctor = window.AudioContext || window.webkitAudioContext;
-    try {
-      audioContext = new Ctor({ sampleRate: SAMPLE_RATE });
-    } catch {
-      audioContext = new Ctor();
-    }
+    // Hardware rate. Coach clips play on this same context, and a forced 16 kHz
+    // context would dull the voice she is matching. The turn detector resamples.
+    audioContext = new Ctor();
   }
   if (!contextBound) {
     contextBound = true;
     audioContext.onstatechange = () => {
-      if (!session || session.status().stopped || hiddenByPage || userPaused) return;
-      if (document.visibilityState === 'hidden') return;
-      if (audioContext.state === 'suspended' || audioContext.state === 'interrupted') {
-        // Try to get audio back first. Pause only if it stays down past startup.
-        audioContext.resume().catch(() => {});
-        if (starting || Date.now() - micOpenedAt < SETTLE_MS) return;
+      if (!session || session.status().stopped) return;
+      const action = onContextState({
+        state: audioContext.state,
+        covered: startupCoversInterruption({ awaitingPermission, starting, micOpenedAt, now: Date.now() }),
+        hidden: hiddenByPage || document.visibilityState === 'hidden',
+        stopped: false,
+        userPaused,
+        paused: session.status().paused
+      });
+      // resume() during the sheet resolves when the sheet goes away, which is what lets speech start.
+      if (action === 'resume-only' || action === 'pause') audioContext.resume().catch(() => {});
+      if (action === 'pause') {
         session.interrupt(audioContext.state);
         show('The coach is paused.', 'Audio was interrupted. It resumes when the route is back.');
-      } else if (audioContext.state === 'running' && session.status().paused) {
+      } else if (action === 'resume-session') {
         session.resumeAfterInterrupt();
         show(session.prompt() || 'The coach is listening.', lastFeedback);
       }
@@ -158,12 +165,33 @@ function ensureContext() {
   return audioContext;
 }
 
+function armPlayAndRecord() {
+  usePlayAndRecord(typeof navigator === 'undefined' ? null : navigator.audioSession);
+}
+
 async function context() {
   const ctx = ensureContext();
+  armPlayAndRecord();
   if (ctx.state !== 'running') await ctx.resume().catch(() => {});
-  const sessionAudio = navigator.audioSession;
-  if (sessionAudio && sessionAudio.type !== 'play-and-record') sessionAudio.type = 'play-and-record';
   return ctx;
+}
+
+// Called synchronously from the Start tap, before getUserMedia. The silent buffer
+// unlocks this context so a clip can start after the permission sheet without another tap.
+function armOutput(ctx) {
+  armPlayAndRecord();
+  let pending;
+  try { pending = ctx.resume(); } catch (error) { pending = Promise.reject(error); }
+  if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+  try {
+    const rate = ctx.sampleRate || SAMPLE_RATE;
+    const buffer = ctx.createBuffer(1, Math.max(1, Math.round(rate * 0.02)), rate);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start();
+  } catch { /* the context is already unlocked, or it is closing */ }
+  return pending;
 }
 
 function outputGain(ctx) {
@@ -190,17 +218,6 @@ async function suspendAudio() {
   if (audioContext && audioContext.state === 'running') await audioContext.suspend();
 }
 
-// One audio element plays every spoken line. The Start tap plays the first clip on it,
-// which unlocks it on iOS for the rest of the session.
-function audioElement() {
-  if (!player) {
-    player = new Audio();
-    player.preload = 'auto';
-    player.setAttribute('playsinline', '');
-  }
-  return player;
-}
-
 // Fragment keys start with ~ and are already normalized.
 function clipUrl(key) {
   return VOICE_CLIPS[key.startsWith('~') ? key : voiceKey(key)];
@@ -210,21 +227,123 @@ function hasClip(key) {
   return Boolean(clipUrl(key));
 }
 
-// Resolves true when the URL played to the end and false when it failed or was cut off.
-function playUrl(url) {
-  const audio = audioElement();
-  audio.src = url;
-  let started;
-  try { started = audio.play(); } catch { return Promise.resolve(false); }
-  return Promise.resolve(started).then(() => new Promise(resolve => {
-    const done = ok => {
-      audio.onended = audio.onerror = audio.onpause = null;
+// Clips play through the AudioContext unlocked by the Start tap. An HTML audio
+// element is paused by the mic permission sheet and does not resume on its own,
+// and a later play() is blocked once that tap's activation is gone.
+function bufferFor(ctx, url) {
+  let cache = clipBuffers.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    clipBuffers.set(ctx, cache);
+  }
+  const existing = cache.get(url);
+  if (existing) return existing;
+  const pending = fetch(url).then(async response => {
+    if (!response.ok) throw new Error('missing clip');
+    const bytes = await response.arrayBuffer();
+    // decodeAudioData detaches the buffer it is given.
+    return ctx.decodeAudioData(bytes.slice(0));
+  }).catch(error => {
+    cache.delete(url);
+    throw error;
+  });
+  cache.set(url, pending);
+  return pending;
+}
+
+function whenRunning(ctx, token) {
+  if (!ctx || ctx.state === 'closed' || token !== speechToken) return Promise.resolve(false);
+  if (ctx.state === 'running') return Promise.resolve(true);
+  let resumePromise;
+  try { resumePromise = ctx.resume(); } catch (error) { resumePromise = Promise.reject(error); }
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      ctx.removeEventListener?.('statechange', onState);
+      resolve(Boolean(ok && token === speechToken && ctx.state === 'running'));
+    };
+    const onState = () => {
+      if (token !== speechToken || ctx.state === 'closed') finish(false);
+      else if (ctx.state === 'running') finish(true);
+    };
+    ctx.addEventListener?.('statechange', onState);
+    const timer = setTimeout(() => finish(ctx.state === 'running'), RESUME_WAIT_MS);
+    Promise.resolve(resumePromise).then(() => {
+      if (ctx.state === 'running') finish(true);
+    }, () => {
+      if (ctx.state === 'running') finish(true);
+    });
+  });
+}
+
+function startBuffer(ctx, buffer, token) {
+  return new Promise(resolve => {
+    if (!buffer || token !== speechToken || ctx.state !== 'running') {
+      resolve(false);
+      return;
+    }
+    let source;
+    try {
+      source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+    } catch {
+      resolve(false);
+      return;
+    }
+    activeSource = source;
+    let settled = false;
+    let cut = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      ctx.removeEventListener?.('statechange', onState);
+      if (activeSource === source) activeSource = null;
       resolve(ok);
     };
-    audio.onended = () => done(true);
-    audio.onerror = () => done(false);
-    audio.onpause = () => done(audio.ended);
-  }), () => false);
+    const onState = () => {
+      if (token !== speechToken || ctx.state === 'closed') {
+        cut = true;
+        try { source.stop(); } catch { /* already stopped */ }
+        finish(false);
+        return;
+      }
+      // The permission sheet and the capture route both move the context here and stop the source.
+      if (ctx.state === 'interrupted' || ctx.state === 'suspended') {
+        cut = true;
+        try { source.stop(); } catch { /* already stopped */ }
+        finish(false);
+      }
+    };
+    source.onended = () => finish(!cut && token === speechToken && ctx.state !== 'interrupted' && ctx.state !== 'suspended');
+    ctx.addEventListener?.('statechange', onState);
+    try { source.start(); } catch { finish(false); }
+  });
+}
+
+async function playClip(url, token) {
+  if (!url) return false;
+  const ctx = ensureContext();
+  let buffer;
+  try { buffer = await bufferFor(ctx, url); } catch { return false; }
+  if (token !== speechToken) return false;
+  if (!(await whenRunning(ctx, token))) return false;
+  return startBuffer(ctx, buffer, token);
+}
+
+async function playDecoded(bytes, token) {
+  const ctx = ensureContext();
+  if (!(await whenRunning(ctx, token)) || token !== speechToken) return false;
+  let buffer;
+  try {
+    const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    buffer = await ctx.decodeAudioData(copy);
+  } catch { return false; }
+  if (token !== speechToken) return false;
+  return startBuffer(ctx, buffer, token);
 }
 
 // Device speech, used only for a line without a clip when cloud speech is unavailable.
@@ -259,25 +378,21 @@ function primeDeviceSpeech() {
 
 function stopSpeech() {
   speechToken += 1;
-  if (player && !player.paused) player.pause();
+  try { activeSource?.stop(); } catch { /* already stopped */ }
+  activeSource = null;
   window.speechSynthesis?.cancel();
 }
 
 async function playPart(part, token) {
   if (part.clip) {
-    if (await playUrl(clipUrl(part.clip))) return true;
+    if (await playClip(clipUrl(part.clip), token)) return true;
     return token === speechToken && speakDevice(part.clip.replace(/^~/, ''));
   }
   // A line that names a word or a count is built at runtime. Cloud speech uses a similar voice.
   const bytes = await cloudSpeech(part.text);
   if (token !== speechToken) return false;
-  if (bytes) {
-    const url = URL.createObjectURL(new Blob([bytes.body], { type: bytes.mime || 'audio/mpeg' }));
-    const played = await playUrl(url);
-    URL.revokeObjectURL(url);
-    if (played) return true;
-    if (token !== speechToken) return false;
-  }
+  if (bytes && await playDecoded(bytes.body, token)) return true;
+  if (token !== speechToken) return false;
   return speakDevice(part.text);
 }
 
@@ -292,8 +407,8 @@ async function runPlan(plan, token) {
 
 /**
  * Speaks a line, interrupting whatever is playing. Turn detection stays off while it
- * plays and for a short tail, so the coach does not hear itself. The first clip starts
- * synchronously, so a call from the Start tap counts as the user gesture.
+ * plays and for a short tail, so the coach does not hear itself. The AudioContext
+ * was unlocked on the Start tap, so a clip can still start after the mic sheet.
  * Resolves true when the whole line played.
  */
 function speak(text) {
@@ -302,16 +417,30 @@ function speak(text) {
   const token = speechToken;
   speaking = true;
   detector?.setSpeaking(true);
-  return runPlan(planSpeech(text, hasClip), token).then(ok => new Promise(resolve => {
-    setTimeout(() => {
-      if (token === speechToken) {
-        speaking = false;
-        if (!judging) detector?.setSpeaking(false);
-        if (audioContext && audioContext.state === 'suspended' && !hiddenByPage) audioContext.resume().catch(() => {});
-      }
-      resolve(ok);
-    }, SPEECH_TAIL_MS);
-  }));
+  return finishSpeech(text, token);
+}
+
+async function finishSpeech(text, token) {
+  try {
+    const plan = () => planSpeech(text, hasClip);
+    let ok = await runPlan(plan(), token);
+    // The sheet can stop a source that had already started. Say the whole line once it can run.
+    if (!ok && token === speechToken && !hiddenByPage && audioContext && audioContext.state !== 'closed') {
+      try { activeSource?.stop(); } catch { /* already stopped */ }
+      if (activeSource) activeSource = null;
+      window.speechSynthesis?.cancel();
+      if (audioContext.state !== 'running') await whenRunning(audioContext, token);
+      if (token === speechToken && audioContext.state === 'running') ok = await runPlan(plan(), token);
+    }
+    await new Promise(resolve => setTimeout(resolve, SPEECH_TAIL_MS));
+    return Boolean(ok && token === speechToken);
+  } finally {
+    if (token === speechToken) {
+      speaking = false;
+      if (!judging) detector?.setSpeaking(false);
+      if (audioContext && audioContext.state === 'suspended' && !hiddenByPage && !userPaused) audioContext.resume().catch(() => {});
+    }
+  }
 }
 
 async function say(text) {
@@ -737,13 +866,17 @@ export function mountDriveCoach(deps) {
   const clicked = () => {
     const resumed = Boolean(session && !session.status().stopped);
     ensureSession();
+    // A previous denial left the coach paused. This tap is the new start.
+    userPaused = false;
     const opening = openingLine(session.prompt(), { resumed });
     const ctx = ensureContext();
-    let resumePromise;
-    try { resumePromise = ctx.resume(); } catch (error) { resumePromise = Promise.reject(error); }
-    if (resumePromise && typeof resumePromise.catch === 'function') resumePromise.catch(() => {});
+    // Cover the sheet before it exists. The statechange it causes must not pause the coach.
+    starting = true;
+    awaitingPermission = !fileTest && Boolean(navigator.mediaDevices?.getUserMedia);
+    // Unlock output and choose play-and-record before the prompt, still inside this tap.
+    armOutput(ctx);
     let micPromise = null;
-    if (!fileTest && navigator.mediaDevices?.getUserMedia) {
+    if (awaitingPermission) {
       try { micPromise = navigator.mediaDevices.getUserMedia({ audio: RAW_MIC }); }
       catch (error) { micPromise = Promise.reject(error); }
     }
@@ -757,7 +890,7 @@ export function mountDriveCoach(deps) {
     }
     begin(ready, micPromise, { opening, spoken }).catch(error => {
       el('coachResume').hidden = false;
-      show('The microphone is needed.', error.message || 'Allow the microphone, then tap to continue.');
+      show('The microphone did not start.', error.message || 'Tap to continue.');
     });
   };
   el('startCoach').onclick = clicked;
@@ -770,7 +903,7 @@ export function mountDriveCoach(deps) {
   navigator.mediaDevices?.addEventListener?.('devicechange', () => {
     if (!session || session.status().stopped || hiddenByPage || userPaused) return;
     // The permission grant itself changes the route while the microphone is still opening.
-    if (starting || !stream || Date.now() - micOpenedAt < SETTLE_MS) return;
+    if (!stream || startupCoversInterruption({ awaitingPermission, starting, micOpenedAt, now: Date.now() })) return;
     recover();
   });
   window.addEventListener('online', () => {
@@ -809,29 +942,56 @@ function ensureSession() {
   return session;
 }
 
+async function failMic(error) {
+  const copy = micFailureCopy(error);
+  // Set before any await so a context that returns to running cannot unpause a coach with no microphone.
+  userPaused = true;
+  session?.interrupt('mic-denied');
+  const resumeButton = el('coachResume');
+  if (resumeButton) resumeButton.hidden = false;
+  show(copy.line, copy.hint);
+  try { await speak(copy.say); } catch { /* the screen still says what to do */ }
+}
+
 async function begin(ready, micPromise = null, { opening = '', spoken = null } = {}) {
   bindVisibility();
-  const mode = await ready;
+  starting = true;
+  let mode = 'manual';
+  try { mode = await ready; } catch { mode = 'manual'; }
   showAwake(mode);
   userPaused = false;
   ensureSession();
   if (session.status().paused) session.resumeAfterInterrupt();
   hiddenByPage = false;
-  el('coachResume').hidden = true;
+  const resumeButton = el('coachResume');
+  if (resumeButton) resumeButton.hidden = true;
   show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback || 'I am listening.');
-  starting = true;
   try {
-    if (!fileTest) {
-      const since = Date.now();
-      await listen(micPromise ? await micPromise : null);
-      if (!(await framesFlowing(since))) await listen();
-      if (!(await framesFlowing(Date.now()))) throw new Error('The microphone is open but not sending sound. Tap to continue.');
-    } else await context();
+    if (fileTest) {
+      awaitingPermission = false;
+      await context();
+      return;
+    }
+    let opened = null;
+    try {
+      opened = micPromise ? await micPromise : await navigator.mediaDevices.getUserMedia({ audio: RAW_MIC });
+    } catch (error) {
+      awaitingPermission = false;
+      await failMic(error);
+      return;
+    }
+    awaitingPermission = false;
+    const since = Date.now();
+    await listen(opened);
+    if (!(await framesFlowing(since))) await listen();
+    if (!(await framesFlowing(Date.now()))) throw new Error('The microphone is open but not sending sound. Tap to continue.');
+    const played = spoken ? await spoken : true;
+    const decision = afterMicRequest({ granted: true, openingPlayed: Boolean(played) });
+    if (decision.replayOpening && opening && session && !session.status().stopped && !hiddenByPage) await speak(opening);
   } finally {
     starting = false;
+    awaitingPermission = false;
   }
-  // Opening the microphone can cut off speech on iOS. If the opening line did not finish, say it again.
-  if (opening && spoken && !(await spoken) && session && !session.status().stopped && !hiddenByPage) await speak(opening);
 }
 
 async function consumeFile(file, ready) {
