@@ -9,8 +9,8 @@
 // Do not "fix" a red run by pushing samples through __liltDriveCoach.feed().
 // That skips the mic graph and is how PR #8 stayed green.
 //
-// A full week-1 drive is 53 lines, which is the ~40 minute list. The wall clock
-// is compressed. What is still phone-only is written in qa/iphone-safari-drive.md.
+// A full week-1 drive walks the phrase bank once. The wall clock is compressed.
+// What is still phone-only is written in qa/iphone-safari-drive.md.
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -553,9 +553,14 @@ async function expectReply(page, audio, coach, { during } = {}) {
   audio.deliverMic = false;
   const fresh = longClips(audio).filter(source => source.startedAt >= mark);
   assertAudible(fresh, audio);
-  assert.equal(coach.status().paused, false, 'the coach paused itself after a take');
+  const ending = coach.status().stopped || coach.status().exhausted;
+  if (!ending) {
+    assert.equal(coach.status().paused, false, 'the coach paused itself after a take');
+    assert.equal(audio.liveProcessors(), 1, 'the mic graph leaked or dropped');
+  } else {
+    assert.ok(audio.liveProcessors() <= 1, 'the mic graph leaked on the way out');
+  }
   assert.equal(coach.speaking(), false, 'speaking stayed true after the reply');
-  assert.equal(audio.liveProcessors(), 1, 'the mic graph leaked or dropped');
   assert.equal(page.elements.get('coachResume').hidden, true);
   assert.match(page.elements.get('coachHeard').textContent, /Heard you/);
   return fresh;
@@ -632,15 +637,23 @@ test('a 53-line drive keeps speaking and does not leak paused or capture state',
         assert.equal(coach.speaking(), false);
         assert.equal(audio.liveProcessors(), 1);
       }
+      if (seen.size < DRIVE_LINES.length) {
+        assert.equal(coach.status().stopped, false, 'the session ended before the bank was finished');
+        assert.equal(audio.liveProcessors(), 1, 'the mic graph leaked or dropped');
+      }
       if (seen.size % 10 === 0) console.log(`iPhone drive ${seen.size}/${DRIVE_LINES.length}`);
     }
     assert.equal(seen.size, DRIVE_LINES.length);
     assert.equal(coach.status().lineIndex, DRIVE_LINES.length);
     assert.equal(coach.status().phraseCount, DRIVE_LINES.length);
-    assert.equal(coach.status().paused, false);
-    assert.equal(coach.status().stopped, false);
+    await waitFor(
+      () => /phrases achieved/i.test(uiText(page, 'coachLine')),
+      () => `finishing the bank did not show the score. ${picture(page, audio, coach)}`,
+      15000
+    );
+    assert.equal(coach.status().stopped, true);
     assert.equal(coach.speaking(), false);
-    assert.equal(audio.liveProcessors(), 1);
+    assert.ok(audio.liveProcessors() <= 1);
     assert.equal(audio.workletNodes, 0);
     assert.ok(replies >= DRIVE_LINES.length);
     assert.ok(audio.outputPeak < 0.01, `the microphone was played back at ${audio.outputPeak}`);

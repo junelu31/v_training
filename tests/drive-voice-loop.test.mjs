@@ -20,7 +20,8 @@ test('a clear take moves to the next phrase and says it', () => {
   assert.equal(next, lines[1]);
   assert.equal(session.prompt(), lines[1]);
   assert.equal(followUpLine({ prompt: session.prompt(), next }), 'That matched. Next: Mia is here early.');
-  assert.equal(session.advance(), lines[0], 'the routine loops');
+  assert.equal(session.advance(), '', 'the bank ends instead of looping');
+  assert.equal(session.status().exhausted, true);
 });
 
 test('a coached take repeats the same phrase, and noise or free talk adds nothing', () => {

@@ -28,15 +28,19 @@ test('natural next phrasings advance, including filler, punctuation, and casing'
   const session = createCoachSession({ lines, now: 0 });
   assert.equal(session.hear('next phrase').type, 'next');
   assert.equal(session.prompt(), lines[1]);
-  assert.equal(session.hear('Next.').type, 'next');
-  assert.equal(session.prompt(), lines[0]);
+  const finished = session.hear('Next.');
+  assert.equal(finished.finished, true);
+  assert.equal(session.prompt(), '');
+  assert.equal(session.status().exhausted, true);
+  assert.equal(session.status().stopped, true);
+  assert.equal(session.status().lineIndex, lines.length);
 });
 
 test('repeat, pause, stop, summary, free, and lines accept the way someone would say them', () => {
   const groups = {
     repeat: ['again', 'repeat', 'say it again', 'repeat that', 'one more time', 'say that again', 'Once more.', 'um, say it again please', 'can you repeat that'],
     pause: ['pause', 'pause the coach', 'hold on', 'Okay, pause.', 'please pause the coach', 'wait a second'],
-    stop: ['stop', 'finish', 'done', "I'm done", 'I am done', 'stop the coach', "I'm done.", "that's enough", 'um I\u2019m finished please'],
+    stop: ['stop', 'finish', 'done', "I'm done", 'I am done', 'stop the coach', "I'm done.", "that's enough", 'um I\u2019m finished please', 'end practice', 'End practice.', 'please end the practice'],
     summary: ['how am I doing', 'how am I doing?', 'How am I doing?', 'how am i doing so far', "how's it going", 'okay, how am I doing'],
     free: ['free talk', 'free', "let's just talk", 'just talk', 'hey coach, free talk please'],
     lines: ['lines', 'prompts', 'back to lines', 'back to the prompts', 'Okay, back to lines.']

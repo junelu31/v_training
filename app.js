@@ -1,5 +1,6 @@
 import { baselineBlendWeight, baselineRelativeScore, blendOverall, describePitchDelta, spectralBalance, scoreBand, validatedOverall } from './voice-metrics.js';
 import { baselineReferences, dayOf, escapeHtml, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory } from './client-logic.js';
+import { phraseDifficulty, orderPracticePhrases } from './drive-coach.js';
 import { mountDriveCoach } from './drive-ui.js';
 
 const STORAGE_KEY = 'lilt.voice.v1';
@@ -34,7 +35,7 @@ let recordingStartedAt = 0;
 let recordingDurationSeconds = 0;
 let recognitionStatus = { state:'idle', error:null };
 let recognitionDone = Promise.resolve();
-let driveMinutes = 30;
+// Saved non-coach logs still store a planned length of 30. The live session does not end on a timer.
 let persistTimer = null;
 let playbackUrl = null;
 let historyAudioUrl = null;
@@ -281,29 +282,35 @@ function renderLibrary(filter){
   document.querySelectorAll('[data-library-lesson]').forEach(b=>b.onclick=()=>startLesson(b.dataset.libraryLesson));
 }
 
+function drivePhraseLessons(drive){
+  return (drive?.lines||[]).map(id=>lessons.find(item=>item.id===id)).filter(Boolean);
+}
 function renderDrive(){
   const drive=currentDrive();
   el('driveDate').textContent=driveDateLabel(); el('driveTitle').textContent=drive.title; el('driveCue').textContent=drive.cue;
-  el('driveDurations').innerHTML=[20,30,40].map(min=>`<button type="button" class="filter-button ${min===driveMinutes?'active':''}" aria-pressed="${min===driveMinutes}" data-drive-minutes="${min}">${min} min</button>`).join('');
-  document.querySelectorAll('[data-drive-minutes]').forEach(button=>button.onclick=()=>{driveMinutes=+button.dataset.driveMinutes;el('driveActual').value=String(driveMinutes);renderDrive()});
-  el('driveLines').innerHTML=drive.lines.map((id,index)=>{
-    const lesson=lessons.find(item=>item.id===id); if(!lesson)return '';
-    return `<article class="drive-line"><b>Line ${index+1} · ${escapeHtml(lesson.title)}</b><p>“${escapeHtml(lesson.phrase)}”</p></article>`;
+  const bank=drivePhraseLessons(drive);
+  const ordered=orderPracticePhrases(bank.map(lesson=>lesson.phrase));
+  el('driveLines').innerHTML=ordered.map((phrase,index)=>{
+    const lesson=bank.find(item=>item.phrase===phrase);
+    const band=phraseDifficulty(phrase).band;
+    const label=band==='easy'?'Easy':band==='medium'?'Medium':'Hard';
+    return `<article class="drive-line"><b>Line ${index+1} · ${label} · ${escapeHtml(lesson?.title||'Phrase')}</b><p>“${escapeHtml(phrase)}”</p></article>`;
   }).join('');
   el('driveBlocks').innerHTML=drive.blocks.map((block,index)=>{
     const steps=(block.how||[]).map(step=>`<li>${escapeHtml(step)}</li>`).join('');
     const how=steps?`<details class="drive-how"><summary>How to do this</summary><ol>${steps}</ol></details>`:'';
-    return `<article class="settings-card drive-block"><span class="kicker">BLOCK ${index+1} OF ${drive.blocks.length}</span><h2>${escapeHtml(block.title)}</h2><p>${escapeHtml(block.body)}</p><p><b>${escapeHtml(block.reps[driveMinutes])}</b></p>${how}</article>`;
+    return `<article class="settings-card drive-block"><span class="kicker">BLOCK ${index+1} OF ${drive.blocks.length}</span><h2>${escapeHtml(block.title)}</h2><p>${escapeHtml(block.body)}</p>${how}</article>`;
   }).join('');
   el('driveTodayDate').textContent=driveDateLabel(); el('driveTodayTitle').textContent=drive.title; el('driveTodayCopy').textContent=drive.cue;
 }
 function saveDriveCheckin(){
-  const drive=currentDrive(),actual=+el('driveActual').value,comfort=+el('driveComfort').value,cueHeld=el('driveCueHeld').value;
-  if(![0,20,30,40].includes(actual)||!Number.isInteger(comfort)||comfort<1||comfort>5||!['yes','partly','no'].includes(cueHeld)){el('driveCheckinStatus').textContent='Choose minutes, comfort, and whether the cue held.';return}
+  const drive=currentDrive(),comfort=+el('driveComfort').value,cueHeld=el('driveCueHeld').value;
+  if(!Number.isInteger(comfort)||comfort<1||comfort>5||!['yes','partly','no'].includes(cueHeld)){el('driveCheckinStatus').textContent='Choose comfort and whether the cue held.';return}
   if(!Array.isArray(state.driveLog))state.driveLog=[];
-  state.driveLog.push({id:crypto.randomUUID(),date:new Date().toISOString(),routineId:drive.id,plannedMinutes:driveMinutes,actualMinutes:actual,comfort,cueHeld});
+  // plannedMinutes is 30 only because older saved logs require 20, 30, or 40. It is not a session length.
+  state.driveLog.push({id:crypto.randomUUID(),date:new Date().toISOString(),routineId:drive.id,plannedMinutes:30,actualMinutes:0,comfort,cueHeld});
   persist({immediate:true}); renderToday(); renderProgress();
-  el('driveCheckinStatus').textContent=actual?`Saved ${actual} minutes of ${drive.title}.`:'Saved as skipped.';
+  el('driveCheckinStatus').textContent='Saved the check-in. The coach keeps going until you end practice.';
 }
 function updateGoalUI(){
   const p=presets[state.goal];
@@ -726,7 +733,7 @@ function renderProgress(){
   el('statGrid').innerHTML=[['Practice time',`${Math.floor(totalSec/60)+driveMin}m`,`${at.length} saved takes · ${driveMin} drive min`],['Course',`${progress.percent}%`,`${progress.done} of ${progress.total} activities`],['Current streak',`${calculateStreak()} days`,'Consistency over intensity'],['Average score',avg||'—',averageDetail],['From baseline',fromBaseline.value,fromBaseline.detail],['Average comfort',comfort==='\u2014'?comfort:`${comfort}/5`,'Your rating after each take'],['Sounds like me',alignment==='\u2014'?alignment:`${alignment}/5`,'Your alignment rating']].map(x=>`<div class="stat-card"><span>${escapeHtml(x[0])}</span><strong>${escapeHtml(String(x[1]))}</strong><small>${escapeHtml(x[2])}</small></div>`).join('');
   const history=[...at.map(attempt=>({kind:'attempt',date:attempt.date,attempt})),...driveLogs().map(drive=>({kind:'drive',date:drive.date,drive}))].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,12);
   el('historyList').innerHTML=history.length?history.map(item=>{
-    if(item.kind==='drive'){const routine=window.COURSE_CONTENT.drives.find(drive=>drive.id===item.drive.routineId);const coach=item.drive.kind==='coach';const comfortText=Number.isInteger(item.drive.comfort)?`${item.drive.comfort}/5 comfort`:'';const detail=coach?(item.drive.coach?.summary||'Drive coach'):'no voice score';return `<div class="history-row"><div><b>${coach?'Drive coach':'Drive'} · ${escapeHtml(routine?.title||item.drive.routineId)}</b><br><small>${new Date(item.drive.date).toLocaleString()} · ${escapeHtml(detail)}</small></div><b>${item.drive.actualMinutes?`${item.drive.actualMinutes} min`:'Skipped'}</b><small>${escapeHtml(comfortText)}</small><small>cue ${escapeHtml(item.drive.cueHeld)}</small><small></small><small></small></div>`}
+    if(item.kind==='drive'){const routine=window.COURSE_CONTENT.drives.find(drive=>drive.id===item.drive.routineId);const coach=item.drive.kind==='coach';const comfortText=Number.isInteger(item.drive.comfort)?`${item.drive.comfort}/5 comfort`:'';const detail=coach?(item.drive.coach?.summary||'Drive coach'):'no voice score';return `<div class="history-row"><div><b>${coach?'Drive coach':'Drive'} · ${escapeHtml(routine?.title||item.drive.routineId)}</b><br><small>${new Date(item.drive.date).toLocaleString()} · ${escapeHtml(detail)}</small></div><b>${item.drive.actualMinutes?`${item.drive.actualMinutes} min`:(Number.isInteger(item.drive.comfort)?'Check-in':'Skipped')}</b><small>${escapeHtml(comfortText)}</small><small>cue ${escapeHtml(item.drive.cueHeld)}</small><small></small><small></small></div>`}
     const a=item.attempt;return `<div class="history-row"><div><b>${escapeHtml(a.lessonTitle)}</b><br><small>${new Date(a.date).toLocaleString()} · ${escapeHtml(presets[a.goal]?.name||a.goal)}</small><br><button type="button" class="text-button history-play" data-play-attempt="${escapeHtml(a.id)}">Play saved audio</button></div><b>${a.overall}</b><small>${a.scores.pitch} pitch</small><small>${a.scores.brightness} spectral</small><small>${a.comfort?`${a.comfort}/5 comfort`:`${a.scores.movement} move`}</small><small>${a.alignment?`${a.alignment}/5 self`:`${a.scores.ease} control`}</small></div>`;
   }).join(''):'<p class="privacy-line">No saved attempts yet.</p>';
   document.querySelectorAll('[data-play-attempt]').forEach(button=>button.onclick=()=>playSavedAttempt(button.dataset.playAttempt));
@@ -778,8 +785,8 @@ function setMenuOpen(open){
 function bindEvents(){
   document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.onclick=()=>showView(n.dataset.view));
   mountDriveCoach({
-    getLines(){const drive=currentDrive();return (drive?.lines||[]).map(id=>lessons.find(item=>item.id===id)?.phrase).filter(Boolean)},
-    getPlanned:()=>driveMinutes,
+    getLines(){const drive=currentDrive();const phrases=(drive?.lines||[]).map(id=>lessons.find(item=>item.id===id)?.phrase).filter(Boolean);return orderPracticePhrases(phrases)},
+    getPlanned:()=>30,
     getRoutine:()=>currentDrive()?.id||'week-1',
     getGoal:()=>presets[state.goal]||presets.balanced,
     save(entry){if(!entry||entry.actualMinutes<1)return;if(!Array.isArray(state.driveLog))state.driveLog=[];const index=state.driveLog.findIndex(item=>item.id===entry.id);if(index>=0)state.driveLog[index]=entry;else state.driveLog.push(entry);persist({immediate:true});renderToday();renderProgress()}

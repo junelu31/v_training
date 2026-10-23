@@ -126,6 +126,9 @@
 .drive-voice button small{display:block;margin-top:4px;color:var(--muted);font-size:13px;line-height:1.35}
 .drive-voice button[aria-pressed="true"]{border-color:var(--coral);background:#fff6f2}
 .coach-voice-switch{min-height:64px;width:min(100%,28rem);padding:14px 18px;font-size:20px;flex-shrink:0}
+.coach-end{min-height:64px;width:min(100%,28rem);padding:14px 18px;font-size:20px;flex-shrink:0;border-radius:12px;border:1px solid #a89f93;background:transparent;color:#f6f1e8}
+.coach-progress{margin:0;min-height:1.3em;font-size:16px;letter-spacing:.04em;color:#e7b5a4}
+.coach-problems{margin:0;white-space:pre-wrap;font-size:20px;line-height:1.45;max-width:28rem}
 @media(max-width:700px){.drive-voice{grid-template-columns:1fr}}
 .history-play{display:inline-block;margin-top:6px}
 a.primary-button{display:inline-block;text-align:center;text-decoration:none}

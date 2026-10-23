@@ -1,11 +1,13 @@
 import { median } from './drive-dsp.js';
-import { cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
+import { CUE_LIBRARY, cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
 import { AURORA_SWITCH_LINES, COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
 
 export { createDriveSession };
 
 export const CONFIDENCE_GATE = 0.62;
+// A phrase is left after a clean pass, or after this many judged tries.
+export const MAX_PHRASE_ATTEMPTS = 3;
 const MEMORY_PHRASES = 24;
 const SAVED_PHRASES = 30;
 const SAVED_WORDS = 16;
@@ -36,6 +38,55 @@ export function tokenizePrompt(prompt) {
     .split(/\s+/)
     .map(word => word.replace(/^[^A-Za-z0-9']+|[^A-Za-z0-9']+$/g, ''))
     .filter(Boolean);
+}
+
+function estimateSyllables(word) {
+  const cleaned = String(word || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (!cleaned) return 1;
+  const groups = cleaned.match(/[aeiouy]+/g);
+  let count = groups ? groups.length : 1;
+  if (cleaned.endsWith('e') && count > 1 && !cleaned.endsWith('le')) count -= 1;
+  return Math.max(1, count);
+}
+
+/**
+ * Grades one practice line from the text already in the bank.
+ * Shorter statements are easier. Questions, extra clauses, and consonant
+ * clusters add difficulty. The band is a tag; the score is the sort key.
+ */
+export function phraseDifficulty(phrase) {
+  const text = String(phrase || '');
+  const words = tokenizePrompt(text);
+  const syllables = words.reduce((sum, word) => sum + estimateSyllables(word), 0);
+  const questions = /\?/.test(text) ? 1 : 0;
+  const clauses = (text.match(/[,;:]/g) || []).length;
+  const clusters = (text.toLowerCase().match(/[bcdfghjklmnpqrstvwxz]{3,}/g) || []).length;
+  const score = words.length * 3 + syllables + questions * 6 + clauses * 4 + clusters * 2;
+  // Cut points sit on the week-1 bank: short lines, everyday sentences, then the long ones.
+  const band = score <= 36 ? 'easy' : score <= 49 ? 'medium' : 'hard';
+  return { score, band, words: words.length, syllables };
+}
+
+/** Easiest first. Equal scores keep the original order. */
+export function orderPracticePhrases(phrases) {
+  return (Array.isArray(phrases) ? phrases : [])
+    .map((phrase, index) => ({ phrase, index, ...phraseDifficulty(phrase) }))
+    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .map(item => item.phrase);
+}
+
+/** Acoustic name already used by the coach, plus the short problem line. Not a new phonetic model. */
+export function wordPhonetics(issue) {
+  const name = CUE_LIBRARY[issue]?.name || '';
+  const how = problemPhrase(issue ? [issue] : []);
+  if (name && how) return `${name}: ${how}`;
+  return name || how || '';
+}
+
+/** Leave the phrase after a clean pass or once the attempt cap is used. Free talk stays put. */
+export function shouldLeavePhrase({ ignored = false, passed = false, attempts = 0, mode = 'lines' } = {}) {
+  if (ignored || mode !== 'lines') return false;
+  return Boolean(passed) || attempts >= MAX_PHRASE_ATTEMPTS;
 }
 
 function finiteMedian(values) {
@@ -532,6 +583,8 @@ const COACH_COMMANDS = [
   { name: 'stop', phrases: [
     'stop', 'finish', 'done', 'stop the coach', 'stop coach', 'stop the session',
     'end the coach', 'end the session', 'finish the coach', 'finish up', 'stop for now',
+    'end practice', 'end the practice', 'end this practice',
+    'stop practice', 'stop the practice', 'finish practice', 'finish the practice',
     'save and stop', "i'm done", 'i am done', 'im done',
     "i'm finished", 'i am finished', 'im finished',
     "i'm done for now", 'i am done for now', 'done for now',
@@ -681,6 +734,7 @@ export function createCoachSession({
   const sessionId = id || `coach-${now}`;
   let mode = 'lines';
   let lineIndex = 0;
+  let lineAttempts = 0;
   let paused = false;
   let stopped = false;
   let cursor = 0;
@@ -692,13 +746,32 @@ export function createCoachSession({
   let startedAt = now;
   let clock = now;
   const phrases = [];
+  const phraseRecords = [];
   const pendingSaves = [];
   let checks = 0;
 
   function prompt() {
     if (mode === 'free') return '';
-    if (!lines.length) return '';
-    return lines[lineIndex % lines.length];
+    if (!lines.length || lineIndex < 0 || lineIndex >= lines.length) return '';
+    return lines[lineIndex];
+  }
+
+  function exhausted() {
+    return mode === 'lines' && lines.length > 0 && lineIndex >= lines.length;
+  }
+
+  function currentRecord() {
+    let record = phraseRecords.find(item => item.lineIndex === lineIndex && !item.closed);
+    if (!record) {
+      record = { lineIndex, prompt: prompt(), attempts: 0, achieved: false, closed: false, words: [] };
+      phraseRecords.push(record);
+    }
+    return record;
+  }
+
+  function closeCurrent() {
+    const record = phraseRecords.find(item => item.lineIndex === lineIndex && !item.closed);
+    if (record) record.closed = true;
   }
 
   function remember(entry) {
@@ -732,6 +805,7 @@ export function createCoachSession({
       id: sessionId,
       date: new Date(at).toISOString(),
       routineId,
+      // Saved logs still use 20, 30, or 40. Nothing stops the session at that mark.
       plannedMinutes: [20, 30, 40].includes(plannedMinutes) ? plannedMinutes : 30,
       actualMinutes: Math.max(minutes, minutes === 0 ? 0 : minutes),
       comfort: null,
@@ -750,7 +824,10 @@ export function createCoachSession({
     id: sessionId,
     prompt,
     status() {
-      return { paused, stopped, mode, lineIndex, cursor, phraseCount, phrases: phrases.length };
+      return {
+        paused, stopped, mode, lineIndex, cursor, phraseCount, phrases: phrases.length,
+        lineAttempts, lineCount: lines.length, exhausted: exhausted()
+      };
     },
     noteAnalysis(result, { transcript = '', at = Date.now() } = {}) {
       clock = at;
@@ -761,8 +838,9 @@ export function createCoachSession({
         return { ignored: true, events: [] };
       }
       phraseCount += 1;
+      const passed = !result.feedback?.spoken && !result.tooNoisy;
       coachedPhrases += result.feedback?.spoken ? 1 : 0;
-      if (!result.feedback?.spoken && !result.tooNoisy) cleanPhrases += 1;
+      if (passed) cleanPhrases += 1;
       recomputeCue();
       cursor = result.feedback?.cursor ?? cursor + 1;
       const entry = {
@@ -776,6 +854,13 @@ export function createCoachSession({
           flags: (word.flags || []).filter(flag => flag.speak).map(flag => flag.issue)
         }))
       };
+      const record = currentRecord();
+      record.attempts += 1;
+      lineAttempts = record.attempts;
+      if (passed) record.achieved = true;
+      for (const word of entry.words) {
+        for (const issue of word.flags) record.words.push({ text: word.text, issue });
+      }
       remember(entry);
       summary = spokenSummary();
       const events = [{ type: 'feedback', text: entry.feedback, entry }];
@@ -786,8 +871,10 @@ export function createCoachSession({
       return { events, entry };
     },
     advance() {
-      if (mode !== 'lines' || !lines.length) return '';
+      if (mode !== 'lines' || !lines.length || lineIndex >= lines.length) return '';
+      closeCurrent();
       lineIndex += 1;
+      lineAttempts = 0;
       return prompt();
     },
     hear(text, at = Date.now()) {
@@ -808,15 +895,25 @@ export function createCoachSession({
         return { type: 'resume', say: 'The coach is listening again.' };
       }
       if (name === 'stop') {
+        if (stopped) return { type: 'stop', say: '', entry: null };
         stopped = true;
         paused = true;
+        closeCurrent();
         const entry = logEntry(at);
         if (entry.actualMinutes >= 1) pendingSaves.push(entry);
         return { type: 'stop', say: 'Stopping. I saved this drive.', entry };
       }
       if (name === 'next') {
-        lineIndex += 1;
-        return { type: 'next', say: prompt() ? `Next. ${prompt()}` : 'Next line.' };
+        if (mode !== 'lines') return { type: 'next', say: 'Next line.' };
+        const next = this.advance();
+        if (!next) {
+          stopped = true;
+          paused = true;
+          const entry = logEntry(at);
+          if (entry.actualMinutes >= 1) pendingSaves.push(entry);
+          return { type: 'next', finished: true, say: 'Stopping. I saved this drive.', entry };
+        }
+        return { type: 'next', say: `Next. ${next}` };
       }
       if (name === 'repeat') return { type: 'repeat', say: prompt() ? `Again. ${prompt()}` : 'Say that once more.' };
       if (name === 'summary') return { type: 'summary', say: spokenSummary() };
@@ -857,6 +954,42 @@ export function createCoachSession({
       checks += 1;
       const entry = logEntry(at);
       return { id: entry.id, phrases: entry.coach.phrases.length, minutes: entry.coach.minutes, memoryPhrases: phrases.length, checks };
+    },
+    markEnded() {
+      stopped = true;
+      paused = true;
+      closeCurrent();
+    },
+    spokenSummary,
+    /**
+     * Achieved: the phrase passed (a take with no coaching note and not too noisy).
+     * Attempted: the phrase was spoken at least once. Skipped lines count as neither.
+     * Problems are words the coach already flagged, with that flag's existing phonetic name.
+     */
+    wrapUp() {
+      const attempted = phraseRecords.filter(item => item.attempts > 0);
+      const achieved = attempted.filter(item => item.achieved);
+      const seen = new Map();
+      for (const phrase of attempted) {
+        for (const word of phrase.words) {
+          const text = String(word.text || '').trim();
+          if (!text || !word.issue) continue;
+          const key = `${text.toLowerCase()}|${word.issue}`;
+          const row = seen.get(key) || {
+            word: text,
+            issue: word.issue,
+            phonetics: wordPhonetics(word.issue),
+            count: 0
+          };
+          row.count += 1;
+          seen.set(key, row);
+        }
+      }
+      const problems = [...seen.values()]
+        .filter(row => row.phonetics)
+        .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word))
+        .slice(0, 12);
+      return { achieved: achieved.length, attempted: attempted.length, takes: phraseCount, problems };
     }
   };
 
