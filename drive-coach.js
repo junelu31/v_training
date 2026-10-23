@@ -1,6 +1,7 @@
 import { median } from './drive-dsp.js';
 import { cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
+import { COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
 
 export { createDriveSession };
 
@@ -285,9 +286,9 @@ export function joinIssueWords(texts) {
   return `${words.slice(0, -1).join(', ')}, and ${words[words.length - 1]}`;
 }
 
-export function composeFeedback({ words = [], tooNoisy = false, previous = null, cursor = 0, cleared = [] } = {}) {
+export function composeFeedback({ words = [], tooNoisy = false, previous = null, cursor = 0, cleared = [], voice = COACH_VOICE } = {}) {
   if (tooNoisy) {
-    return { text: cueLine('noisy', cursor), issue: 'noisy', word: '', cursor: cursor + 1, spoken: false };
+    return { text: cueLine('noisy', cursor, voice), issue: 'noisy', word: '', cursor: cursor + 1, spoken: false };
   }
   const groups = new Map();
   for (const word of words) {
@@ -308,7 +309,7 @@ export function composeFeedback({ words = [], tooNoisy = false, previous = null,
   const issue = ISSUE_ORDER.find(item => groups.has(item));
   const group = groups.get(issue);
   const names = joinIssueWords(group.map(word => word.text));
-  const sentence = `${names} ${problemPhrase([issue])}. ${cueLine(issue, cursor)}`;
+  const sentence = `${names} ${problemPhrase([issue])}. ${cueLine(issue, cursor, voice)}`;
   return {
     text: sentence,
     issue,
@@ -469,7 +470,7 @@ export function expectedVoicedMs(prompt) {
   return Math.min(9000, count * 170 + 120);
 }
 
-export function classifyUtterance({ analysis, prompt, goal, ear, previousWords = [], cursor = 0, timings = null, transcript = '' } = {}) {
+export function classifyUtterance({ analysis, prompt, goal, ear, previousWords = [], cursor = 0, timings = null, transcript = '', voice = COACH_VOICE } = {}) {
   const tooNoisy = analysis && Object.prototype.hasOwnProperty.call(analysis, 'tooNoisy')
     ? !!analysis.tooNoisy
     : !!((Number.isFinite(analysis?.snrDb) && analysis.snrDb < 11) || analysis?.voicedFraction < 0.12);
@@ -492,7 +493,7 @@ export function classifyUtterance({ analysis, prompt, goal, ear, previousWords =
       for (const issue of priorIssues) if (!now.has(issue)) cleared.push({ word: word.text, issue });
     }
   }
-  const feedback = composeFeedback({ words, tooNoisy, previous: previousWords, cursor, cleared });
+  const feedback = composeFeedback({ words, tooNoisy, previous: previousWords, cursor, cleared, voice });
   const profile = profilePhrase(analysis, tooNoisy ? null : ear);
   const confident = words.flatMap(word => word.flags.filter(flag => flag.speak).map(flag => ({ word: word.text, ...flag })));
   return { tooNoisy, words, feedback, profile, confident, cleared };
@@ -626,15 +627,33 @@ export function coachMinutes(elapsedMs) {
   return clamp(Math.round(elapsedMs / 60000), 1, 120);
 }
 
-/** Spoken when the coach starts or resumes. The driver hears the target voice, then matches it. */
-export function openingLine(prompt, { resumed = false } = {}) {
+/** Spoken when the coach starts or resumes. The driver hears the selected voice, then matches it. */
+export function openingLine(prompt, { resumed = false, voice = COACH_VOICE, switched = false } = {}) {
+  if (voice === PRACTICE_VOICE) {
+    const lead = resumed
+      ? 'The coach is listening again. Match this lighter practice voice:'
+      : 'Drive coach is on. Match this lighter practice voice:';
+    const idle = resumed
+      ? 'The coach is listening again. Talk in this lighter practice voice whenever you are ready.'
+      : 'Drive coach is on. Talk in this lighter practice voice whenever you are ready.';
+    return prompt ? `${lead} ${prompt}` : idle;
+  }
+  if (switched) {
+    return prompt
+      ? `Back to River. Match how I say this: ${prompt}`
+      : 'Back to River. Talk in this voice whenever you are ready.';
+  }
   const lead = resumed ? 'The coach is listening again.' : 'Drive coach is on.';
   return prompt ? `${lead} Match how I say this: ${prompt}` : `${lead} Talk in this voice whenever you are ready.`;
 }
 
 /** Spoken after a judged phrase in line mode: the same line after a cue, the next line after a match. */
-export function followUpLine({ prompt, coached = false, tooNoisy = false, next = '' } = {}) {
+export function followUpLine({ prompt, coached = false, tooNoisy = false, next = '', voice = COACH_VOICE } = {}) {
   if (tooNoisy || !prompt) return '';
+  if (voice === PRACTICE_VOICE) {
+    if (coached) return `Try it again, and match this lighter practice voice: ${prompt}`;
+    return next ? `That matched this practice voice. Next: ${next}` : '';
+  }
   if (coached) return `Try it again, and match how I say it: ${prompt}`;
   return next ? `That matched. Next: ${next}` : '';
 }

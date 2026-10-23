@@ -1,17 +1,63 @@
-import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
-import { SESSION_LINES } from './drive-session.js';
+import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
+import { PRACTICE_SESSION_LINES, SESSION_LINES } from './drive-session.js';
 
 // Spoken lines for Drive coach. Every fixed line has a pre-rendered clip under
-// public/voice, in one Kokoro voice. That voice is the sound to imitate.
-// Swap it by changing COACH_VOICE, then re-render with VOICE set to the same id
-// and FORCE=1. A line that names a word or a count is stitched from fragment
-// clips in that same voice: each word of the drive phrases, each problem phrase,
-// the word "and", the summary words, and the numbers 0 to 199.
+// public/voice, in the selected Kokoro voice. That voice is the sound to imitate.
+// River clips stay at voice/<hash>.mp3. The practice voice uses voice/<id>/<hash>.mp3.
+// Re-render with VOICE set to the same id. FORCE=1 rebuilds clips that already exist.
+// A line that names a word or a count is stitched from fragment clips in that same
+// voice: each word of the drive phrases, each problem phrase, the word "and", the
+// summary words, and the numbers 0 to 199.
 // Only a part no fragment covers falls back to cloud speech or the device voice.
 
-// af_river: the voice June locked as the coach and the training target.
+// af_river: the long-term target, and the default. On a paragraph at speed 0.95
+// it sits near 173 Hz, with a thicker tone (H1-H2 about -2 dB).
 export const COACH_VOICE = 'af_river';
 export const COACH_VOICE_SPEED = 0.95;
+// af_bella: temporary practice voice. Same paragraph, about 212 Hz and a much
+// lighter tone (H1-H2 about +7 dB), with a slightly more forward vowel.
+// af_sky is lower (about 152 Hz) and darker (centroid near 990 Hz), so the gap
+// from a masculine start is smaller, not larger.
+export const PRACTICE_VOICE = 'af_bella';
+export const DRIVE_VOICE_STORAGE_KEY = 'lilt-drive-voice';
+
+export const DRIVE_VOICES = {
+  af_river: {
+    id: 'af_river',
+    button: 'River',
+    detail: 'The voice to land on',
+    kicker: 'DRIVE COACH · RIVER',
+    note: 'This is River, the voice to land on. Switch to the practice voice when you want a higher, lighter target.',
+    switchTo: 'Switch to practice voice'
+  },
+  af_bella: {
+    id: 'af_bella',
+    button: 'Easier practice',
+    detail: 'Higher and lighter, for now',
+    kicker: 'DRIVE COACH · PRACTICE VOICE',
+    note: 'This is the temporary practice voice. It sits higher and lighter than River, so the gap is easier to hear. Match this voice. River stays the one to land on.',
+    switchTo: 'Switch to River'
+  }
+};
+export const DRIVE_VOICE_ORDER = [COACH_VOICE, PRACTICE_VOICE];
+
+export function normalizeDriveVoice(value) {
+  return value === PRACTICE_VOICE ? PRACTICE_VOICE : COACH_VOICE;
+}
+
+export function readDriveVoice(storage) {
+  try {
+    return normalizeDriveVoice(storage?.getItem?.(DRIVE_VOICE_STORAGE_KEY));
+  } catch {
+    return COACH_VOICE;
+  }
+}
+
+export function writeDriveVoice(storage, value) {
+  const next = normalizeDriveVoice(value);
+  try { storage?.setItem?.(DRIVE_VOICE_STORAGE_KEY, next); } catch { /* this browser is not storing settings */ }
+  return next;
+}
 
 // Lines from drive-coach.js commands and checks. tests/drive-voice.test.mjs fails if one is missing.
 export const COACH_LINES = [
@@ -34,6 +80,24 @@ export const LEAD_LINES = [
   'The coach is listening again. Talk in this voice whenever you are ready.',
   'That matched. Next:',
   'Try it again, and match how I say it:',
+  'Next.',
+  'Again.',
+  'Back to lines.'
+];
+
+// Spoken only when she switches back to River during a drive.
+export const RIVER_SWITCH_LINES = [
+  'Back to River. Match how I say this:',
+  'Back to River. Talk in this voice whenever you are ready.'
+];
+
+export const PRACTICE_LEAD_LINES = [
+  'Drive coach is on. Match this lighter practice voice:',
+  'Drive coach is on. Talk in this lighter practice voice whenever you are ready.',
+  'The coach is listening again. Match this lighter practice voice:',
+  'The coach is listening again. Talk in this lighter practice voice whenever you are ready.',
+  'That matched this practice voice. Next:',
+  'Try it again, and match this lighter practice voice:',
   'Next.',
   'Again.',
   'Back to lines.'
@@ -93,9 +157,12 @@ function stitch(text, hasClip) {
   return parts.length ? parts : null;
 }
 
-export function fixedVoiceLines(phrases = []) {
-  const cues = Object.values(CUE_LIBRARY).flatMap(entry => entry.variants);
-  const all = [...Object.values(SESSION_LINES), ...cues, ...COACH_LINES, ...LEAD_LINES, ...phrases];
+export function fixedVoiceLines(phrases = [], voice = COACH_VOICE) {
+  const practice = voice === PRACTICE_VOICE;
+  const cues = Object.values(practice ? PRACTICE_CUE_LIBRARY : CUE_LIBRARY).flatMap(entry => entry.variants);
+  const leads = practice ? PRACTICE_LEAD_LINES : [...LEAD_LINES, ...RIVER_SWITCH_LINES];
+  const session = Object.values(practice ? PRACTICE_SESSION_LINES : SESSION_LINES);
+  const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases];
   const seen = new Map();
   for (const line of all) if (line && !seen.has(voiceKey(line))) seen.set(voiceKey(line), line.trim());
   return [...seen.values()];
@@ -127,11 +194,12 @@ export function planSpeech(text, hasClip) {
   return plan.flatMap(part => ('text' in part ? stitch(part.text, hasClip) || [part] : [part]));
 }
 
-export function clipFile(text) {
+export function clipFile(text, voice = COACH_VOICE) {
   let hash = 0x811c9dc5;
   for (const char of text.startsWith('~') ? text : voiceKey(text)) {
     hash ^= char.codePointAt(0);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return `voice/${hash.toString(16).padStart(8, '0')}.mp3`;
+  const name = `${hash.toString(16).padStart(8, '0')}.mp3`;
+  return voice === COACH_VOICE ? `voice/${name}` : `voice/${voice}/${name}`;
 }

@@ -99,7 +99,7 @@
       .drive-check input[type=range] { display: block; width: 100%; margin-top: 8px; accent-color: var(--coral); }
       .coach-start { width: 100%; min-height: 64px; font-size: 22px; margin-top: 8px; }
       .coach-note { color: var(--muted); font-size: 15px; line-height: 1.5; margin: 8px 0 0; }
-      .coach-overlay { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; justify-content: center; gap: 18px; padding: 28px; background: #14120f; color: #f6f1e8; }
+      .coach-overlay { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; justify-content: safe center; gap: 18px; padding: 28px; background: #14120f; color: #f6f1e8; overflow-y: auto; }
       .coach-overlay[hidden] { display: none !important; }
       .coach-kicker { letter-spacing: .16em; font-size: 13px; margin: 0; color: #e7b5a4; }
       .coach-overlay h1 { font-size: clamp(40px, 8vw, 84px); line-height: 1.05; margin: 0; font-weight: 650; }
@@ -120,5 +120,12 @@
 #micStatus{text-align:center;margin:8px 0 0}
 #driveLengthLabel{margin:28px 0 0}
 #driveView .drive-duration{margin-top:8px}
+.drive-voice{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0 0}
+.drive-voice button{min-height:76px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:#fff;text-align:left}
+.drive-voice button b{display:block;font-size:18px}
+.drive-voice button small{display:block;margin-top:4px;color:var(--muted);font-size:13px;line-height:1.35}
+.drive-voice button[aria-pressed="true"]{border-color:var(--coral);background:#fff6f2}
+.coach-voice-switch{min-height:64px;width:min(100%,28rem);padding:14px 18px;font-size:20px;flex-shrink:0}
+@media(max-width:700px){.drive-voice{grid-template-columns:1fr}}
 .history-play{display:inline-block;margin-top:6px}
 a.primary-button{display:inline-block;text-align:center;text-decoration:none}
