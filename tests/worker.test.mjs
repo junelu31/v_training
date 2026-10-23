@@ -19,6 +19,19 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
       ...(data === undefined ? {} : { body: JSON.stringify(data) })
     });
     assert.equal((await call('/api/state')).status, 401);
+    const unauth = [
+      ['GET', '/api/auth/me'],
+      ['POST', '/api/auth/logout', {}],
+      ['PUT', '/api/state', { state: {}, version: 0 }],
+      ['POST', '/api/analyze', {}],
+      ['GET', '/api/drive/turn'],
+      ['POST', '/api/drive/turn', {}],
+      ['POST', '/api/drive/turn', { audioBase64: '', say: 'Match how I say this.' }]
+    ];
+    for (const [method, path, data] of unauth) {
+      const response = await call(path, method, data);
+      assert.equal(response.status, 401, `${method} ${path} returned ${response.status}`);
+    }
     const credentials = { email: 'first@example.com', password: 'a-long-test-password' };
     assert.equal((await call('/api/auth/register', 'POST', credentials, null, 'https://evil.test')).status, 403);
     const register = await call('/api/auth/register', 'POST', credentials);
@@ -104,6 +117,8 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await analyze({ 'Content-Type': 'audio/webm', 'X-Practice-Prompt': btoa('Hello there') }, new Uint8Array())).status, 400);
     assert.equal((await analyze({ 'Content-Type': 'audio/webm', 'X-Practice-Prompt': btoa('Hello there') }, new Uint8Array([1, 2, 3, 4]))).status, 503);
     assert.equal((await db.prepare("SELECT key FROM auth_limits WHERE key LIKE 'analysis:%'").all()).results.length, 0);
+    assert.equal((await call('/api/drive/turn', 'POST', {}, signedIn)).status, 400);
+    assert.equal((await call('/api/drive/turn', 'POST', { audioBase64: '', say: 'The coach is listening again.' }, signedIn)).status, 503);
     assert.equal((await call('/api/auth/logout', 'POST', {}, signedIn)).status, 200);
     assert.equal((await call('/api/state', 'GET', undefined, signedIn)).status, 401);
     const hash = signedIn.split('=')[1];
