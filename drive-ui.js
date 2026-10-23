@@ -33,6 +33,9 @@ let visibilityHandler = null;
 let workletReady = null;
 let awaitingPermission = false;
 let driveVoiceId = COACH_VOICE;
+// Looping silence started in the Start tap. iPhone drops the script processor
+// when the one-shot prompt ends, so this source has to outlive every clip.
+let captureClock = null;
 const clipBuffers = new WeakMap();
 let judging = false;
 let speechToken = 0;
@@ -220,7 +223,24 @@ function armOutput(ctx) {
     source.connect(ctx.destination);
     source.start();
   } catch { /* the context is already unlocked, or it is closing */ }
+  // Started inside the tap, before the prompt. The buffer above is a one-shot and
+  // ends immediately. On iPhone the script processor stops with it.
+  if (needsDirectScriptCapture(navigator.userAgent || '', navigator.platform || '', navigator.maxTouchPoints || 0)) {
+    try { ensureCaptureClock(ctx); } catch { /* the context is closing */ }
+  }
   return pending;
+}
+
+function ensureCaptureClock(ctx) {
+  if (captureClock && captureClock.context === ctx) return captureClock;
+  const rate = ctx.sampleRate || SAMPLE_RATE;
+  const buffer = ctx.createBuffer(1, Math.max(1, Math.round(rate * 0.02)), rate);
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  source.start();
+  captureClock = source;
+  return source;
 }
 
 function outputGain(ctx) {
@@ -888,7 +908,15 @@ function attachScriptCapture(ctx, generation, { direct }) {
     }
   };
   sourceNode.connect(processor);
-  // iOS only runs this callback when the processor's output is the context destination.
+  // iOS runs this callback only into the destination, and only while some source
+  // is still scheduled. The prompt is a one-shot, so without this loop her speech
+  // never reaches the turn detector. The buffer is silence, it is not played, and
+  // it is not the clip watchdog's source, so a flicker cannot stop it mid-take.
+  if (direct) {
+    const clockSource = ensureCaptureClock(ctx);
+    try { clockSource.disconnect(); } catch { /* not connected yet */ }
+    clockSource.connect(processor);
+  }
   processor.connect(direct ? ctx.destination : outputGain(ctx));
 }
 

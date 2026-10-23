@@ -15,6 +15,9 @@
 // - The real drive-capture-worklet.js runs. It cannot invent samples the graph did not deliver.
 // - onended never fires, and currentTime does not move, once the mic is live. A clip finishes
 //   only from the wall clock.
+// - The script processor keeps the microphone only while a clip is still playing, or while a
+//   looping source is connected to that processor. After the one-shot prompt ends, silence
+//   here is the live bug.
 // - feed() throws. A reply counts only when a new clip buffer starts on the audio context.
 //
 // A pass here is still not a phone certificate. It does not measure earpiece routing or the
@@ -182,11 +185,15 @@ class SafariAudioContext {
   createBufferSource() {
     const ctx = this;
     const source = {
+      context: ctx,
       buffer: null,
+      loop: false,
       started: false,
       ended: false,
       stopped: false,
-      connect() {},
+      dests: new Set(),
+      connect(dest) { source.dests.add(dest); },
+      disconnect() { source.dests.clear(); },
       onended: null,
       start() {
         source.started = true;
@@ -257,9 +264,19 @@ class SafariAudioContext {
       else if (script) this.tickScript(script);
     }
   }
+  capturePulling(node) {
+    // Safari stops a ScriptProcessor when the last one-shot buffer ends. A looping
+    // source connected to that processor is what keeps the microphone scheduled.
+    const clip = this.sources.some(source => source.started && !source.stopped && !source.ended && !source.loop && (source.buffer?.duration || 0) > 0.2);
+    if (clip) return true;
+    return this.sources.some(source => source.loop && source.started && !source.stopped && !source.ended && source.dests?.has(node));
+  }
   inputBlock(node) {
-    const voice = this.queue.take(BLOCK);
     const silent = new Float32Array(BLOCK);
+    if (node.kind === 'script' && !this.capturePulling(node)) {
+      return { channels: [silent, new Float32Array(BLOCK)], voice: 0 };
+    }
+    const voice = this.queue.take(BLOCK);
     if (explicitMono(node)) return { channels: [silent], voice: 0 };
     if (node.channelCount === 1 || node.inputChannels === 1) return { channels: [voice], voice: countVoice(voice) };
     return { channels: [voice, silent.slice(0)], voice: countVoice(voice) };
@@ -455,6 +472,11 @@ test('iPhone Safari hears a repeated sentence through the mic graph and answers 
     assert.ok(longClips(audio).length >= 1, 'the opening sentence never started on the audio context');
     const capture = audio.nodes.find(node => node.kind === 'worklet') || audio.nodes.find(node => node.kind === 'script');
     assert.ok(capture, 'no capture node');
+    assert.equal(audio.currentTime, 0, 'Safari does not advance currentTime once the mic is live');
+    assert.ok(
+      audio.sources.some(source => source.loop && source.started && !source.stopped && source.dests.has(capture)),
+      'after the prompt ends, nothing keeps the mic processor alive'
+    );
 
     const rounds = 2;
     for (let round = 0; round < rounds; round++) {
