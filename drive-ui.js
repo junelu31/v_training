@@ -297,9 +297,11 @@ function startBuffer(ctx, buffer, token) {
     activeSource = source;
     let settled = false;
     let cut = false;
+    let timer = null;
     const finish = ok => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       ctx.removeEventListener?.('statechange', onState);
       if (activeSource === source) activeSource = null;
       resolve(ok);
@@ -320,6 +322,15 @@ function startBuffer(ctx, buffer, token) {
     };
     source.onended = () => finish(!cut && token === speechToken && ctx.state !== 'interrupted' && ctx.state !== 'suspended');
     ctx.addEventListener?.('statechange', onState);
+    // Safari can play the buffer and never fire onended once the mic graph is
+    // connected, and stop() does not fire it either. A pending promise leaves
+    // speaking true, so her phrase is ignored and no feedback ever starts.
+    const durationMs = Math.ceil((Number(buffer.duration) || 0) * 1000);
+    timer = setTimeout(() => {
+      try { source.stop(); } catch { /* already stopped */ }
+      finish(!cut && token === speechToken && ctx.state === 'running');
+    }, Math.min(20000, Math.max(500, durationMs + 500)));
+    timer.unref?.();
     try { source.start(); } catch { finish(false); }
   });
 }
