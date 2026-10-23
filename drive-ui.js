@@ -1,10 +1,10 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
-import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, openingLine, parseEar } from './drive-coach.js';
+import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar } from './drive-coach.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, voiceKey, writeDriveVoice } from './drive-voice.js';
 import { PRACTICE_CLIPS, VOICE_CLIPS } from './drive-voice-clips.js';
-import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
+import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, mixChannels, needsDirectScriptCapture, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
 export { createDriveSession };
 
@@ -711,6 +711,22 @@ export function planCoachTurn({
   voice = COACH_VOICE
 }) {
   const prompt = coachSession.prompt();
+  const requested = matchVoiceRequest(heard, { prompt });
+  if (requested) {
+    return {
+      type: 'voice',
+      voice: requested,
+      feedbackText: '',
+      extra: [],
+      follow: '',
+      say: openingLine(prompt, { resumed: true, voice: requested, switched: requested === COACH_VOICE }),
+      heardLine: 'Heard you.',
+      statusHeld: noisyStatusHeld,
+      checkpoint: false,
+      showLine: prompt || 'Free talk whenever you are ready.',
+      showSub: ''
+    };
+  }
   const judged = classifyUtterance({
     analysis: turn,
     prompt,
@@ -798,6 +814,12 @@ async function judgeTurn(turn) {
     statusHeld,
     voice: driveVoiceId
   });
+  if (plan.type === 'voice') {
+    selectDriveVoice(plan.voice, { announce: false });
+    show(plan.showLine || session.prompt() || 'Free talk whenever you are ready.', plan.say);
+    if (plan.say) await speak(plan.say);
+    return;
+  }
   if (plan.type === 'command') {
     const result = plan.result;
     if (result.type === 'pause') userPaused = true;
@@ -827,14 +849,6 @@ async function judgeTurn(turn) {
   if (plan.follow && session && !session.status().stopped && !hiddenByPage) await say(plan.follow);
 }
 
-function forceMono(node) {
-  if (!node) return node;
-  try { node.channelCount = 1; } catch { /* some nodes fix the count */ }
-  try { node.channelCountMode = 'explicit'; } catch { /* ignore */ }
-  try { node.channelInterpretation = 'speakers'; } catch { /* ignore */ }
-  return node;
-}
-
 function pushCaptured(input, ctx) {
   lastFrameAt = Date.now();
   if (session && detector) detector.setExpectation(expectedVoicedMs(session.prompt()));
@@ -847,23 +861,53 @@ function pushCaptured(input, ctx) {
   showLevel(Math.sqrt(sum / (copy.length || 1)));
 }
 
+function mixBuffer(buffer) {
+  const count = buffer?.numberOfChannels || (buffer?.getChannelData ? 1 : 0);
+  const channels = [];
+  for (let channel = 0; channel < count; channel++) channels.push(buffer.getChannelData(channel));
+  return mixChannels(channels);
+}
+
+function attachScriptCapture(ctx, generation, { direct }) {
+  let node = null;
+  if (direct) {
+    try { node = ctx.createScriptProcessor(2048, 2, 1); } catch { node = null; }
+  }
+  if (!node) node = ctx.createScriptProcessor(2048, 1, 1);
+  processor = node;
+  processor.onaudioprocess = event => {
+    if (generation !== micGeneration) return;
+    const mixed = mixBuffer(event.inputBuffer);
+    if (mixed.length) pushCaptured(mixed, ctx);
+    // One non-zero sample keeps Safari pulling the node. The mic itself stays out of the speaker.
+    const outCount = event.outputBuffer?.numberOfChannels || 0;
+    for (let channel = 0; channel < outCount; channel++) {
+      const output = event.outputBuffer.getChannelData(channel);
+      output.fill(0);
+      if (output.length) output[0] = 1e-4;
+    }
+  };
+  sourceNode.connect(processor);
+  // iOS only runs this callback when the processor's output is the context destination.
+  processor.connect(direct ? ctx.destination : outputGain(ctx));
+}
+
 async function attachCapture(ctx, generation) {
-  sourceNode = forceMono(ctx.createMediaStreamSource(stream));
-  // The mic source has to reach the destination. A branch that ends at a silent
-  // node is dropped, and the worklet or script processor never runs.
+  // Do not set channelCount on this node. Explicit mono is silence on iPhone Safari.
+  sourceNode = ctx.createMediaStreamSource(stream);
+  const ios = needsDirectScriptCapture(navigator.userAgent || '', navigator.platform || '', navigator.maxTouchPoints || 0);
+  if (ios && ctx.createScriptProcessor) {
+    attachScriptCapture(ctx, generation, { direct: true });
+    return;
+  }
   const keepAlive = outputGain(ctx);
   try { sourceNode.connect(keepAlive); } catch { /* already connected */ }
   if (ctx.audioWorklet?.addModule) {
     try {
       if (!workletReady) workletReady = ctx.audioWorklet.addModule('drive-capture-worklet.js');
       await workletReady;
-      let node;
-      try {
-        node = new AudioWorkletNode(ctx, 'drive-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' });
-      } catch {
-        node = new AudioWorkletNode(ctx, 'drive-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
-      }
-      processor = forceMono(node);
+      const node = new AudioWorkletNode(ctx, 'drive-capture', { numberOfInputs: 1, numberOfOutputs: 1 });
+      processor = node;
       node.port.onmessage = event => {
         if (generation !== micGeneration) return;
         const channel = event.data;
@@ -876,13 +920,7 @@ async function attachCapture(ctx, generation) {
       workletReady = null;
     }
   }
-  processor = forceMono(ctx.createScriptProcessor(2048, 1, 1));
-  processor.onaudioprocess = event => {
-    const input = event.inputBuffer.getChannelData(0);
-    pushCaptured(input, ctx);
-  };
-  sourceNode.connect(processor);
-  processor.connect(keepAlive);
+  attachScriptCapture(ctx, generation, { direct: false });
 }
 
 async function listen(alreadyOpen) {

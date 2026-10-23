@@ -19,6 +19,8 @@ export const COACH_VOICE_SPEED = 0.95;
 // darker (centroid near 990 Hz), so the gap from a masculine start is smaller.
 export const PRACTICE_VOICE = 'af_bella';
 export const DRIVE_VOICE_STORAGE_KEY = 'lilt-drive-voice';
+// The iPhone endurance gate stores the same choice under this name.
+export const COACH_VOICE_STORAGE_KEY = 'lilt-coach-voice';
 
 export const DRIVE_VOICES = {
   af_river: {
@@ -46,7 +48,9 @@ export function normalizeDriveVoice(value) {
 
 export function readDriveVoice(storage) {
   try {
-    return normalizeDriveVoice(storage?.getItem?.(DRIVE_VOICE_STORAGE_KEY));
+    const own = storage?.getItem?.(DRIVE_VOICE_STORAGE_KEY);
+    if (own === PRACTICE_VOICE || own === COACH_VOICE) return own;
+    return normalizeDriveVoice(storage?.getItem?.(COACH_VOICE_STORAGE_KEY));
   } catch {
     return COACH_VOICE;
   }
@@ -54,7 +58,10 @@ export function readDriveVoice(storage) {
 
 export function writeDriveVoice(storage, value) {
   const next = normalizeDriveVoice(value);
-  try { storage?.setItem?.(DRIVE_VOICE_STORAGE_KEY, next); } catch { /* this browser is not storing settings */ }
+  try {
+    storage?.setItem?.(DRIVE_VOICE_STORAGE_KEY, next);
+    storage?.setItem?.(COACH_VOICE_STORAGE_KEY, next);
+  } catch { /* this browser is not storing settings */ }
   return next;
 }
 

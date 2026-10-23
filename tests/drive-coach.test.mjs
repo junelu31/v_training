@@ -58,6 +58,9 @@ test('the practice voice has its own physical cues', () => {
   assert.equal(readDriveVoice(memory), COACH_VOICE);
   assert.equal(writeDriveVoice(memory, PRACTICE_VOICE), PRACTICE_VOICE);
   assert.equal(readDriveVoice(memory), PRACTICE_VOICE);
+  assert.equal(memory.getItem('lilt-coach-voice'), PRACTICE_VOICE);
+  const gate = { store: { 'lilt-coach-voice': PRACTICE_VOICE }, getItem(key) { return this.store[key]; }, setItem(key, value) { this.store[key] = value; } };
+  assert.equal(readDriveVoice(gate), PRACTICE_VOICE);
   assert.equal(writeDriveVoice(memory, 'af_sky'), COACH_VOICE);
   assert.match(DRIVE_VOICES[PRACTICE_VOICE].note, /higher and lighter/);
   assert.match(DRIVE_VOICES[COACH_VOICE].note, /voice to land on/);

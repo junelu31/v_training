@@ -606,6 +606,20 @@ function isPromptReading(said, prompt) {
   return overlap / saidWords.length >= 0.8 && overlap / expectedWords.length >= 0.6;
 }
 
+const VOICE_REQUESTS = [
+  { voice: PRACTICE_VOICE, phrases: ['practice voice', 'easier voice', 'easier practice', 'brighter voice', 'the practice voice'] },
+  { voice: COACH_VOICE, phrases: ['main voice', 'river', 'back to river', 'the main voice', 'main coach voice'] }
+];
+
+/** A whole utterance that asks to change the coach voice. The current line stays put. */
+export function matchVoiceRequest(text, { prompt = '' } = {}) {
+  const normalized = normalizeCommandText(text);
+  if (!normalized || isPromptReading(normalized, prompt)) return null;
+  const options = commandCandidates(normalized);
+  const found = VOICE_REQUESTS.find(request => [...options].some(option => request.phrases.includes(option)));
+  return found ? found.voice : null;
+}
+
 /**
  * Matches one spoken command. Fillers such as "okay", "um", "please", and "coach"
  * can sit around it, and punctuation or casing from the transcript does not matter.
