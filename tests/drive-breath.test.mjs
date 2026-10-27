@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SAMPLE_RATE, createTurnDetector } from '../drive-dsp.js';
 import {
+  BREATH_GAP_SECONDS,
   BREATH_SECONDS,
+  BREATH_UNDER_DB,
   breathSamples,
   prependBreath,
   readBreathCue,
@@ -72,7 +74,15 @@ test('the inhale is a short shaped noise burst, then silence at the join', () =>
   assert.deepEqual(breathSamples(samples.length, rate), samples);
 });
 
-test('the inhale is prepended to the phrase as one buffer', () => {
+function rms(samples, start, end) {
+  let energy = 0;
+  for (let i = start; i < end; i++) energy += samples[i] * samples[i];
+  return Math.sqrt(energy / (end - start));
+}
+
+test('the inhale is prepended to the phrase as one buffer, with a short gap and a softer cue', () => {
+  assert.ok(BREATH_GAP_SECONDS >= 0.12 && BREATH_GAP_SECONDS <= 0.18);
+  assert.ok(BREATH_UNDER_DB >= 10 && BREATH_UNDER_DB <= 14);
   const rate = 16000;
   const phraseSeconds = 0.4;
   const phraseLength = Math.round(rate * phraseSeconds);
@@ -84,12 +94,10 @@ test('the inhale is prepended to the phrase as one buffer', () => {
     sampleRate: rate,
     getChannelData: channel => data[channel]
   };
-  const channels = [];
   const ctx = {
     sampleRate: rate,
     createBuffer(_count, length, sampleRate) {
       const stored = new Float32Array(length);
-      channels.push(stored);
       return {
         duration: length / sampleRate,
         length,
@@ -99,17 +107,22 @@ test('the inhale is prepended to the phrase as one buffer', () => {
       };
     }
   };
-  const mixed = prependBreath(ctx, phrase);
+  const mixed = prependBreath(ctx, phrase, { phraseGain: 1 });
   const breathFrames = Math.round(rate * BREATH_SECONDS);
-  assert.equal(mixed.length, breathFrames + phraseLength);
-  assert.ok(Math.abs(mixed.duration - (BREATH_SECONDS + phraseSeconds)) < 0.001);
-  assert.notEqual(mixed.getChannelData(0)[0], 0.5);
-  assert.equal(mixed.getChannelData(0)[breathFrames], 0.5);
-  assert.equal(mixed.getChannelData(0)[mixed.length - 1], 0.5);
+  const gapFrames = Math.round(rate * BREATH_GAP_SECONDS);
+  const channel = mixed.getChannelData(0);
+  assert.equal(mixed.length, breathFrames + gapFrames + phraseLength);
+  assert.ok(Math.abs(mixed.duration - (BREATH_SECONDS + BREATH_GAP_SECONDS + phraseSeconds)) < 0.001);
+  assert.equal(channel[breathFrames], 0);
+  assert.equal(channel[breathFrames + gapFrames - 1], 0);
+  assert.equal(channel[breathFrames + gapFrames], 0.5);
+  assert.equal(channel[channel.length - 1], 0.5);
+  assert.equal(data[0][0], 0.5, 'the cached phrase is not rewritten');
+  const under = 20 * Math.log10(rms(channel, breathFrames + gapFrames, channel.length) / rms(channel, 0, breathFrames));
+  assert.ok(under >= 10 && under <= 14, `breath is ${under.toFixed(2)} dB under the phrase`);
   const bare = { duration: 0.3, length: 4800, numberOfChannels: 1 };
   const extended = prependBreath({ sampleRate: rate }, bare);
-  assert.ok(extended.duration > bare.duration);
-  assert.equal(extended.duration, BREATH_SECONDS + bare.duration);
+  assert.equal(extended.duration, BREATH_SECONDS + BREATH_GAP_SECONDS + bare.duration);
 });
 
 test('the inhale does not open a turn, and the speaking gate drops it', () => {
@@ -141,7 +154,7 @@ test('phrase speech mutes the mic before the inhale is attached to the phrase cl
   const mute = speak.indexOf('detector?.setSpeaking(true)');
   const start = speak.indexOf('finishSpeech(');
   assert.ok(mute > -1 && start > mute);
-  assert.match(source, /prependBreath\(ctx, buffer\)/);
+  assert.match(source, /prependBreath\(ctx, buffer, \{ phraseGain: gain \}\)/);
   assert.match(source, /shouldCueBreath/);
   assert.match(source, /output\[0\] = 1e-4/);
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
