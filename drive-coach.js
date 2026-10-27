@@ -1,7 +1,7 @@
 import { median } from './drive-dsp.js';
 import { CUE_LIBRARY, cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
-import { AURORA_SWITCH_LINES, COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
+import { COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
 
 export { createDriveSession };
 
@@ -696,34 +696,21 @@ export function coachMinutes(elapsedMs) {
   return clamp(Math.round(elapsedMs / 60000), 1, 120);
 }
 
-/** Spoken when the coach starts or resumes. The driver hears the selected voice, then matches it. */
-export function openingLine(prompt, { resumed = false, voice = COACH_VOICE, switched = false } = {}) {
-  if (voice === PRACTICE_VOICE) {
-    const lead = resumed
-      ? 'The coach is listening again. Match this lighter practice voice:'
-      : 'Drive coach is on. Match this lighter practice voice:';
-    const idle = resumed
-      ? 'The coach is listening again. Talk in this lighter practice voice whenever you are ready.'
-      : 'Drive coach is on. Talk in this lighter practice voice whenever you are ready.';
-    return prompt ? `${lead} ${prompt}` : idle;
-  }
-  if (switched) {
-    const [withPrompt, idle] = AURORA_SWITCH_LINES;
-    return prompt ? `${withPrompt} ${prompt}` : idle;
-  }
-  const lead = resumed ? 'The coach is listening again.' : 'Drive coach is on.';
-  return prompt ? `${lead} Match how I say this: ${prompt}` : `${lead} Talk in this voice whenever you are ready.`;
+/**
+ * The practice phrase, and nothing in front of it. Voice, resume, and switch
+ * choose which clip bank plays that phrase. With no phrase, a short listening
+ * line that already has a clip.
+ */
+export function openingLine(prompt, { resumed = false, switched = false } = {}) {
+  if (prompt) return prompt;
+  return resumed || switched ? 'The coach is listening again.' : 'I am listening again.';
 }
 
-/** Spoken after a judged phrase in line mode: the same line after a cue, the next line after a match. */
-export function followUpLine({ prompt, coached = false, tooNoisy = false, next = '', voice = COACH_VOICE } = {}) {
+/** The same phrase after a cue, or the next phrase after a match. Nothing in front of it. */
+export function followUpLine({ prompt, coached = false, tooNoisy = false, next = '' } = {}) {
   if (tooNoisy || !prompt) return '';
-  if (voice === PRACTICE_VOICE) {
-    if (coached) return `Try it again, and match this lighter practice voice: ${prompt}`;
-    return next ? `That matched this practice voice. Next: ${next}` : '';
-  }
-  if (coached) return `Try it again, and match how I say it: ${prompt}`;
-  return next ? `That matched. Next: ${next}` : '';
+  if (coached) return prompt;
+  return next || '';
 }
 
 export function createCoachSession({
@@ -966,9 +953,9 @@ export function createCoachSession({
           pendingSaves.push(entry);
           return { type: 'next', finished: true, say: 'Stopping. I saved this drive.', entry };
         }
-        return { type: 'next', say: `Next. ${next}` };
+        return { type: 'next', say: next };
       }
-      if (name === 'repeat') return { type: 'repeat', say: prompt() ? `Again. ${prompt()}` : 'Say that once more.' };
+      if (name === 'repeat') return { type: 'repeat', say: prompt() || 'Say that once more.' };
       if (name === 'summary') return { type: 'summary', say: spokenSummary() };
       if (name === 'free') {
         mode = 'free';
@@ -976,7 +963,7 @@ export function createCoachSession({
       }
       if (name === 'lines') {
         mode = 'lines';
-        return { type: 'lines', say: prompt() ? `Back to lines. ${prompt()}` : 'Back to lines.' };
+        return { type: 'lines', say: prompt() || 'Back to lines.' };
       }
       return { type: 'speech' };
     },

@@ -155,9 +155,7 @@ export const PRACTICE_CUE_LIBRARY = {
   held: {
     name: 'No confident issue',
     variants: [
-      'That one matched this lighter voice. Keep going.',
-      'Nothing to fix there.',
-      'That stayed with this practice voice.'
+      'Nothing to fix there.'
     ]
   }
 };

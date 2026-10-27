@@ -2,6 +2,7 @@ import { baselineBlendWeight, baselineRelativeScore, blendOverall, describePitch
 import { baselineReferences, dayOf, driveHistoryExtras, escapeHtml, keepDriveLog, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory } from './client-logic.js';
 import { phraseDifficulty, orderPracticePhrases } from './drive-coach.js';
 import { mountDriveCoach } from './drive-ui.js';
+import { readBreathCue, writeBreathCue } from './drive-breath.js';
 
 const STORAGE_KEY = 'lilt.voice.v1';
 const DB_NAME = 'lilt-recordings';
@@ -770,6 +771,8 @@ function drawProgressChart(){
 
 function renderSettings(){
   el('saveAudioToggle').checked=state.saveAudio;
+  const breath=el('breathCueToggle');
+  if(breath) breath.checked=readBreathCue(localStorage);
   el('presetCards').innerHTML=Object.entries(presets).map(([k,p])=>`<label class="preset-card ${k===state.goal?'active':''}"><input type="radio" name="preset" value="${k}" ${k===state.goal?'checked':''}><span><strong>${p.name}</strong><small>${p.description}</small></span></label>`).join('');
   document.querySelectorAll('input[name=preset]').forEach(r=>r.onchange=()=>setGoal(r.value));
 }
@@ -813,6 +816,8 @@ function bindEvents(){
   el('drawerScrim').onclick=()=>setMenuOpen(false);
   el('privacyButton').onclick=()=>el('modalBackdrop').hidden=false;el('modalClose').onclick=el('modalOkay').onclick=()=>el('modalBackdrop').hidden=true;
   el('chartMetric').onchange=drawProgressChart;el('saveAudioToggle').onchange=e=>{state.saveAudio=e.target.checked;persist()};
+  const breathToggle=el('breathCueToggle');
+  if(breathToggle) breathToggle.onchange=e=>writeBreathCue(localStorage,e.target.checked);
   el('exportData').onclick=()=>exportProgress();
   el('retrySync').onclick=async()=>{syncFailed=false;el('retrySync').disabled=true;try{await rebase()}catch{}await persist({immediate:true});el('retrySync').disabled=false};
   el('loadLatest').onclick=()=>{if(confirm('Discard pending changes on this device and load the latest saved progress? Export a backup in Settings first.')){localStorage.removeItem(pendingKey());location.reload()}};

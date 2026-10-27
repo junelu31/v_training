@@ -41,7 +41,7 @@ export const DRIVE_VOICES = {
     button: 'Easier practice',
     detail: 'Higher and lighter, for now',
     kicker: 'DRIVE COACH · PRACTICE VOICE',
-    note: 'This is the temporary practice voice. It sits higher and lighter than Aurora, so the gap is easier to hear. Match this voice. Aurora stays the one to land on.',
+    note: 'This is the temporary practice voice. It sits higher and lighter than Aurora, so the gap is easier to hear. Aurora stays the one to land on.',
     switchTo: 'Switch to Aurora'
   }
 };
@@ -83,32 +83,14 @@ export const COACH_LINES = [
   'I am listening again.'
 ];
 
-// Leads that come before a phrase. Each is one clip so the phrasing stays natural.
+// Short command crumbs that already have clips. A practice phrase is not introduced by one of these.
 export const LEAD_LINES = [
-  'Drive coach is on. Match how I say this:',
-  'Drive coach is on. Talk in this voice whenever you are ready.',
-  'The coach is listening again. Match how I say this:',
-  'The coach is listening again. Talk in this voice whenever you are ready.',
-  'That matched. Next:',
-  'Try it again, and match how I say it:',
   'Next.',
   'Again.',
   'Back to lines.'
 ];
 
-// Spoken only when she switches back to Aurora during a drive.
-export const AURORA_SWITCH_LINES = [
-  'Back to Aurora. Match how I say this:',
-  'Back to Aurora. Talk in this voice whenever you are ready.'
-];
-
 export const PRACTICE_LEAD_LINES = [
-  'Drive coach is on. Match this lighter practice voice:',
-  'Drive coach is on. Talk in this lighter practice voice whenever you are ready.',
-  'The coach is listening again. Match this lighter practice voice:',
-  'The coach is listening again. Talk in this lighter practice voice whenever you are ready.',
-  'That matched this practice voice. Next:',
-  'Try it again, and match this lighter practice voice:',
   'Next.',
   'Again.',
   'Back to lines.'
@@ -171,7 +153,7 @@ function stitch(text, hasClip) {
 export function fixedVoiceLines(phrases = [], voice = COACH_VOICE) {
   const practice = voice === PRACTICE_VOICE;
   const cues = Object.values(practice ? PRACTICE_CUE_LIBRARY : CUE_LIBRARY).flatMap(entry => entry.variants);
-  const leads = practice ? PRACTICE_LEAD_LINES : [...LEAD_LINES, ...AURORA_SWITCH_LINES];
+  const leads = practice ? PRACTICE_LEAD_LINES : LEAD_LINES;
   const session = Object.values(practice ? PRACTICE_SESSION_LINES : SESSION_LINES);
   const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases];
   const seen = new Map();
