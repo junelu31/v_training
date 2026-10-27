@@ -101,7 +101,7 @@ test('three judged tries move to the next phrase, and a pass counts as achieved'
   const plan = planCoachTurn({ session, turn, heard: 'morning light', at: 4000 });
   assert.equal(plan.type, 'practice');
   assert.equal(plan.finished, false);
-  assert.match(plan.follow, /^Next\. /);
+  assert.equal(plan.follow, bank[2]);
   assert.equal(session.prompt(), bank[2]);
   assert.equal(session.status().stopped, false);
   assert.equal(session.status().lineAttempts, 0);
@@ -135,7 +135,7 @@ test('a run of too-noisy takes still moves on after three tries', () => {
   const third = planCoachTurn({ session, turn, heard: 'road', at: 3000 });
   assert.equal(third.type, 'practice');
   assert.equal(third.finished, false);
-  assert.match(third.follow, /^Next\. /);
+  assert.equal(third.follow, 'Two is next.');
   assert.equal(session.prompt(), 'Two is next.');
   assert.equal(session.status().lineAttempts, 0);
   assert.equal(session.status().phrases, 1);

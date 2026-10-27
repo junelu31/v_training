@@ -4,7 +4,7 @@ import { readFileSync, statSync, existsSync } from 'node:fs';
 import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
 import { SESSION_LINES } from '../drive-session.js';
 import { createCoachSession, followUpLine, openingLine } from '../drive-coach.js';
-import { AURORA_SWITCH_LINES, COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, PRACTICE_LEAD_LINES, PRACTICE_VOICE, clipFile, fixedVoiceLines, fragmentLines, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
+import { COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, PRACTICE_LEAD_LINES, PRACTICE_VOICE, clipFile, fixedVoiceLines, fragmentLines, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
 import { PRACTICE_CUE_LIBRARY } from '../drive-cues.js';
 import { PRACTICE_SESSION_LINES } from '../drive-session.js';
 import { PRACTICE_CLIPS, VOICE_CLIPS } from '../drive-voice-clips.js';
@@ -33,13 +33,17 @@ test('every fixed line has a clip file that exists and stays small', () => {
 
 test('opening and follow-up lines play entirely from clips', () => {
   for (const phrase of phrases) {
-    for (const line of [openingLine(phrase), openingLine(phrase, { resumed: true }), followUpLine({ prompt: phrase, next: phrase }), followUpLine({ prompt: phrase, coached: true }), `Next. ${phrase}`, `Again. ${phrase}`, `Back to lines. ${phrase}`]) {
+    for (const line of [openingLine(phrase), openingLine(phrase, { resumed: true }), openingLine(phrase, { switched: true }), followUpLine({ prompt: phrase, next: phrase }), followUpLine({ prompt: phrase, coached: true })]) {
+      assert.equal(line, phrase);
       const plan = planSpeech(line, has);
-      assert.ok(plan.every(part => part.clip), `runtime part in: ${line}`);
-      assert.ok(plan.length <= 2, `too many clips for: ${line}`);
+      assert.deepEqual(plan, [{ clip: phrase }], `phrase prompt left the clip: ${line}`);
     }
   }
-  assert.ok(planSpeech(openingLine(''), has).every(part => part.clip));
+  for (const idle of [openingLine(''), openingLine('', { resumed: true }), openingLine('', { switched: true })]) {
+    const plan = planSpeech(idle, has);
+    assert.ok(plan.length === 1 && plan[0].clip, idle);
+    assert.equal(/match|talk in this/i.test(idle), false, idle);
+  }
 });
 
 test('each drive loads a long conversational phrase bank', () => {
@@ -122,17 +126,9 @@ test('clips are the one coach voice, and together stay under 16 MB', () => {
   const total = Object.values(VOICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
   assert.ok(total < 16 * 1024 * 1024, `clips total ${total} bytes`);
   const fixed = fixedVoiceLines(phrases, COACH_VOICE);
-  for (const line of AURORA_SWITCH_LINES) {
-    assert.match(line, /Aurora/);
-    assert.equal(fixed.includes(line), true, line);
-    const file = clipFile(line);
-    assert.match(file, /^voice\/[0-9a-f]{8}\.mp3$/);
-    // The baked Aurora set reuses the previous line hashes. These two leads
-    // are new text, so they fall back to cloud or device speech until a clip exists.
-    if (existsSync(new URL(`../public/${file}`, import.meta.url))) {
-      assert.equal(VOICE_CLIPS[voiceKey(line)], file, line);
-    }
-  }
+  assert.equal(fixed.includes(phrases[0]), true);
+  assert.equal(fixed.some(line => /match how i say this/i.test(line)), false);
+  assert.equal(openingLine(phrases[0], { switched: true }), phrases[0]);
 });
 
 test('the practice voice has its own clips for cues, leads, and the same phrase bank', () => {
@@ -159,9 +155,9 @@ test('the practice voice has its own clips for cues, leads, and the same phrase 
   const cue = PRACTICE_CUE_LIBRARY.heavy.variants[0];
   assert.deepEqual(planSpeech(`Arriving went heavy. ${cue}`, hasPractice), [{ clip: '~arriving' }, { clip: '~went heavy' }, { clip: cue }]);
   for (const phrase of phrases) {
-    for (const line of [openingLine(phrase, { voice: PRACTICE_VOICE }), followUpLine({ prompt: phrase, coached: true, voice: PRACTICE_VOICE }), `Next. ${phrase}`, `Again. ${phrase}`]) {
-      const plan = planSpeech(line, hasPractice);
-      assert.ok(plan.every(part => part.clip), `runtime part in practice voice: ${line}`);
+    for (const line of [openingLine(phrase, { voice: PRACTICE_VOICE }), followUpLine({ prompt: phrase, coached: true, voice: PRACTICE_VOICE })]) {
+      assert.equal(line, phrase);
+      assert.deepEqual(planSpeech(line, hasPractice), [{ clip: phrase }], `practice prompt left the clip: ${line}`);
     }
   }
   const total = Object.values(PRACTICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);

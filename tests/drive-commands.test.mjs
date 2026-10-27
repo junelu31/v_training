@@ -101,7 +101,7 @@ test('a command skips phrase feedback and only speaks its short reply', () => {
   assert.deepEqual(plan.extra, []);
   assert.equal(plan.follow, '');
   assert.equal(plan.heardLine, 'Heard you.');
-  assert.equal(plan.say, `Next. ${lines[1]}`);
+  assert.equal(plan.say, lines[1]);
   assert.equal(session.prompt(), lines[1]);
   assert.equal(session.status().phraseCount, 0);
   assert.equal([plan.feedbackText, plan.say, plan.follow].some(line => line.includes(SESSION_LINES['too-noisy'])), false);
@@ -110,7 +110,7 @@ test('a command skips phrase feedback and only speaks its short reply', () => {
   const again = planCoachTurn({ session: repeat, turn, heard: 'say it again', at: 1000 });
   assert.equal(again.command, 'repeat');
   assert.equal(again.feedbackText, '');
-  assert.equal(again.say, `Again. ${lines[0]}`);
+  assert.equal(again.say, lines[0]);
   assert.equal(repeat.prompt(), lines[0]);
 
   const stopping = createCoachSession({ lines, now: 0 });
@@ -134,7 +134,7 @@ test('practice voice and main voice switch the coach and leave the line alone', 
   const plan = planCoachTurn({ session, turn, heard: 'main voice', at: 1000, voice: PRACTICE_VOICE });
   assert.equal(plan.type, 'voice');
   assert.equal(plan.voice, COACH_VOICE);
-  assert.match(plan.say, /^Back to Aurora\./);
+  assert.equal(plan.say, lines[0]);
   assert.equal(plan.feedbackText, '');
   assert.equal(session.prompt(), lines[0]);
   assert.equal(session.status().phraseCount, 0);

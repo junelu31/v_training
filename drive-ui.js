@@ -3,6 +3,7 @@ import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, 
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, voiceKey, writeDriveVoice } from './drive-voice.js';
+import { prependBreath, readBreathCue, shouldCueBreath } from './drive-breath.js';
 import { PRACTICE_CLIPS, VOICE_CLIPS } from './drive-voice-clips.js';
 import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, mixChannels, needsDirectScriptCapture, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
@@ -476,14 +477,21 @@ function startBuffer(ctx, buffer, token) {
   });
 }
 
-async function playClip(url, token) {
-  if (!url) return false;
+// 'played' reached the speaker. 'cut' started or was blocked by the route, so the
+// line can be said again from the clip. 'missing' has no file and may use device speech.
+async function playClip(url, token, breath = false) {
+  if (!url) return 'missing';
   const ctx = ensureContext();
   let buffer;
-  try { buffer = await bufferFor(ctx, url); } catch { return false; }
-  if (token !== speechToken) return false;
-  if (!(await whenRunning(ctx, token))) return false;
-  return startBuffer(ctx, buffer, token);
+  try { buffer = await bufferFor(ctx, url); } catch { return 'missing'; }
+  if (token !== speechToken) return 'cut';
+  if (!(await whenRunning(ctx, token))) return 'cut';
+  if (token !== speechToken) return 'cut';
+  if (breath) {
+    try { buffer = prependBreath(ctx, buffer); }
+    catch { /* the phrase still plays */ }
+  }
+  return await startBuffer(ctx, buffer, token) ? 'played' : 'cut';
 }
 
 async function playDecoded(bytes, token) {
@@ -535,9 +543,12 @@ function stopSpeech() {
   window.speechSynthesis?.cancel();
 }
 
-async function playPart(part, token, bank) {
+async function playPart(part, token, bank, breath = false) {
   if (part.clip) {
-    if (await playClip(clipIn(bank, part.clip), token)) return true;
+    const result = await playClip(clipIn(bank, part.clip), token, breath);
+    if (result === 'played') return true;
+    // A route cut is not a missing clip. Device speech would hide the replay.
+    if (result !== 'missing') return false;
     return token === speechToken && speakDevice(part.clip.replace(/^~/, ''));
   }
   // A line that names a word or a count is built at runtime. Cloud speech uses a similar voice.
@@ -548,11 +559,13 @@ async function playPart(part, token, bank) {
   return speakDevice(part.text);
 }
 
-async function runPlan(plan, token, bank) {
+async function runPlan(plan, token, bank, breath = false) {
   let ok = true;
+  let lead = breath;
   for (const part of plan) {
     if (token !== speechToken) return false;
-    ok = (await playPart(part, token, bank)) && ok;
+    ok = (await playPart(part, token, bank, lead)) && ok;
+    lead = false;
   }
   return ok && token === speechToken;
 }
@@ -563,28 +576,39 @@ async function runPlan(plan, token, bank) {
  * was unlocked on the Start tap, so a clip can still start after the mic sheet.
  * Resolves true when the whole line played.
  */
+function breathCueEnabled() {
+  try { return readBreathCue(globalThis.localStorage); }
+  catch { return true; }
+}
+
+function wantsBreath(text) {
+  return shouldCueBreath(text, session?.prompt?.() || '', breathCueEnabled());
+}
+
 function speak(text) {
   if (!text) return Promise.resolve(true);
   stopSpeech();
   const token = speechToken;
   speaking = true;
+  // Mute the mic before any sample, including the inhale in front of a phrase.
   detector?.setSpeaking(true);
   // Keep this line on the voice that started it. A switch applies to the next line.
   return finishSpeech(text, token, clipBank());
 }
 
 async function finishSpeech(text, token, bank) {
+  const breath = wantsBreath(text);
   try {
     const has = key => Boolean(clipIn(bank, key));
     const plan = () => planSpeech(text, has);
-    let ok = await runPlan(plan(), token, bank);
+    let ok = await runPlan(plan(), token, bank, breath);
     // The sheet can stop a source that had already started. Say the whole line once it can run.
     if (!ok && token === speechToken && !hiddenByPage && audioContext && audioContext.state !== 'closed') {
       try { activeSource?.stop(); } catch { /* already stopped */ }
       if (activeSource) activeSource = null;
       window.speechSynthesis?.cancel();
       if (audioContext.state !== 'running') await whenRunning(audioContext, token);
-      if (token === speechToken && audioContext.state === 'running') ok = await runPlan(plan(), token, bank);
+      if (token === speechToken && audioContext.state === 'running') ok = await runPlan(plan(), token, bank, breath);
     }
     await new Promise(resolve => setTimeout(resolve, SPEECH_TAIL_MS));
     return Boolean(ok && token === speechToken);
@@ -883,7 +907,7 @@ export function planCoachTurn({
       type: 'practice',
       feedbackText: '',
       extra: [],
-      follow: nextLine ? `Next. ${nextLine}` : '',
+      follow: nextLine || '',
       finished: bankDone,
       say: '',
       heardLine: 'Heard you, but it was too noisy to judge.',
@@ -913,7 +937,7 @@ export function planCoachTurn({
   const next = moveOn ? coachSession.advance() : '';
   const finished = Boolean(moveOn && !next && coachSession.status().exhausted);
   const follow = moveOn
-    ? (next ? (passed ? followUpLine({ prompt: next, coached: false, tooNoisy: false, next, voice }) : `Next. ${next}`) : '')
+    ? (next ? followUpLine({ prompt: next, coached: false, tooNoisy: false, next, voice }) : '')
     : followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next: '', voice });
   return {
     type: 'practice',
@@ -950,7 +974,8 @@ async function judgeTurn(turn) {
   });
   if (plan.type === 'voice') {
     selectDriveVoice(plan.voice, { announce: false });
-    show(plan.showLine || session.prompt() || 'Free talk whenever you are ready.', plan.say);
+    const line = plan.showLine || session.prompt() || 'Free talk whenever you are ready.';
+    show(line, plan.say && plan.say !== line ? plan.say : '');
     if (plan.say) await speak(plan.say);
     return;
   }
@@ -1256,8 +1281,8 @@ function selectDriveVoice(id, { announce = false } = {}) {
     voice: driveVoiceId,
     switched: driveVoiceId === COACH_VOICE
   });
-  // Keep the phrase as the large line. The announcement is spoken and shown under it.
-  show(session.prompt() || 'Free talk whenever you are ready.', line);
+  const shown = session.prompt() || 'Free talk whenever you are ready.';
+  show(shown, line !== shown ? line : (lastFeedback || ''));
   speak(line);
 }
 
