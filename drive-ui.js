@@ -4,6 +4,7 @@ import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, voiceKey, writeDriveVoice } from './drive-voice.js';
 import { prependBreath, readBreathCue, shouldCueBreath } from './drive-breath.js';
+import { DEVICE_SPEECH_VOLUME, clipPlaybackGain, gainForBuffer, scaleBuffer } from './drive-clip-gains.js';
 import { PRACTICE_CLIPS, VOICE_CLIPS } from './drive-voice-clips.js';
 import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, mixChannels, needsDirectScriptCapture, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
 
@@ -373,6 +374,7 @@ function startBuffer(ctx, buffer, token) {
     try {
       source = ctx.createBufferSource();
       source.buffer = buffer;
+      // Straight to the speaker. Loudness is already in the samples, so a gain node cannot boost the mix.
       source.connect(ctx.destination);
     } catch {
       resolve(false);
@@ -487,9 +489,13 @@ async function playClip(url, token, breath = false) {
   if (token !== speechToken) return 'cut';
   if (!(await whenRunning(ctx, token))) return 'cut';
   if (token !== speechToken) return 'cut';
+  const gain = clipPlaybackGain(url);
   if (breath) {
-    try { buffer = prependBreath(ctx, buffer); }
+    try { buffer = prependBreath(ctx, buffer, { phraseGain: gain }); }
     catch { /* the phrase still plays */ }
+  } else {
+    try { buffer = scaleBuffer(ctx, buffer, gain); }
+    catch { /* play the clip at its baked level */ }
   }
   return await startBuffer(ctx, buffer, token) ? 'played' : 'cut';
 }
@@ -503,6 +509,8 @@ async function playDecoded(bytes, token) {
     buffer = await ctx.decodeAudioData(copy);
   } catch { return false; }
   if (token !== speechToken) return false;
+  try { buffer = scaleBuffer(ctx, buffer, gainForBuffer(buffer)); }
+  catch { /* play the cloud clip as decoded */ }
   return startBuffer(ctx, buffer, token);
 }
 
@@ -513,6 +521,7 @@ function speakDevice(text) {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-US';
     utterance.rate = 0.95;
+    utterance.volume = DEVICE_SPEECH_VOLUME;
     let settled = false;
     // iOS sometimes never fires end. Without a limit the coach would stop listening for good.
     const limit = setTimeout(() => finish(true), 3000 + text.split(/\s+/).length * 600);

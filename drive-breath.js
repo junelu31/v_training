@@ -3,6 +3,10 @@
 // so iPhone Safari still plays one destination source on the same keep-alive path.
 
 export const BREATH_SECONDS = 0.55;
+// A musician's count-in: the inhale finishes, then a short silence, then the phrase.
+export const BREATH_GAP_SECONDS = 0.15;
+// The cue sits this far under the phrase it introduces.
+export const BREATH_UNDER_DB = 12;
 export const BREATH_CUE_STORAGE_KEY = 'lilt-breath-cue';
 
 export function readBreathCue(storage) {
@@ -64,15 +68,45 @@ export function breathSamples(length, sampleRate) {
   return out;
 }
 
+function rmsOf(samples) {
+  if (!samples?.length) return 0;
+  let energy = 0;
+  for (let i = 0; i < samples.length; i++) energy += samples[i] * samples[i];
+  return Math.sqrt(energy / samples.length);
+}
+
+/** Scale the inhale so its RMS sits BREATH_UNDER_DB under the phrase, and under the peak ceiling. */
+export function breathAtPhraseLevel(breath, phraseRms) {
+  const current = rmsOf(breath);
+  const target = phraseRms * 10 ** (-BREATH_UNDER_DB / 20);
+  const out = new Float32Array(breath.length);
+  if (!(current > 1e-8) || !(target > 0)) return out;
+  const gain = target / current;
+  let peak = 0;
+  for (let i = 0; i < breath.length; i++) {
+    out[i] = breath[i] * gain;
+    peak = Math.max(peak, Math.abs(out[i]));
+  }
+  const ceiling = 10 ** (-3 / 20);
+  if (peak > ceiling) {
+    const trim = ceiling / peak;
+    for (let i = 0; i < out.length; i++) out[i] *= trim;
+  }
+  return out;
+}
+
 /**
- * Puts the inhale in front of a decoded phrase. One buffer, no gap.
+ * Inhale, a short silence, then the phrase, in one buffer.
+ * phraseGain is the clip's playback gain, applied only to the phrase samples.
  * A test double with no channel data gets a longer duration instead of a second source.
  * A real buffer we cannot safely copy is returned unchanged.
  */
-export function prependBreath(ctx, phrase) {
+export function prependBreath(ctx, phrase, { phraseGain = 1 } = {}) {
   const rate = ctx?.sampleRate || phrase?.sampleRate || 48000;
   const breathFrames = Math.max(1, Math.round(rate * BREATH_SECONDS));
+  const gapFrames = Math.max(0, Math.round(rate * BREATH_GAP_SECONDS));
   const phraseRate = phrase?.sampleRate || rate;
+  const gain = phraseGain > 0 ? phraseGain : 1;
   const canCopy = typeof phrase?.getChannelData === 'function'
     && typeof ctx?.createBuffer === 'function'
     && phraseRate === rate
@@ -80,32 +114,40 @@ export function prependBreath(ctx, phrase) {
   if (!canCopy) {
     if (typeof phrase?.getChannelData === 'function') return phrase;
     return {
-      duration: BREATH_SECONDS + (Number(phrase?.duration) || 0),
-      length: breathFrames + (phrase?.length || 0),
+      duration: BREATH_SECONDS + BREATH_GAP_SECONDS + (Number(phrase?.duration) || 0),
+      length: breathFrames + gapFrames + (phrase?.length || 0),
       numberOfChannels: phrase?.numberOfChannels || 1,
       sampleRate: rate
     };
   }
   const channels = phrase.numberOfChannels || 1;
-  const total = breathFrames + phrase.length;
+  const total = breathFrames + gapFrames + phrase.length;
   let mixed;
   try { mixed = ctx.createBuffer(channels, total, rate); }
   catch { return phrase; }
   if (typeof mixed?.getChannelData !== 'function') {
     return {
-      duration: BREATH_SECONDS + (Number(phrase.duration) || phrase.length / rate),
+      duration: BREATH_SECONDS + BREATH_GAP_SECONDS + (Number(phrase.duration) || phrase.length / rate),
       length: total,
       numberOfChannels: channels,
       sampleRate: rate
     };
   }
-  const breath = breathSamples(breathFrames, rate);
+  const lead = phrase.getChannelData(0);
+  if (!lead) return phrase;
+  let energy = 0;
+  for (let i = 0; i < lead.length; i++) {
+    const sample = lead[i] * gain;
+    energy += sample * sample;
+  }
+  const breath = breathAtPhraseLevel(breathSamples(breathFrames, rate), Math.sqrt(energy / lead.length));
   for (let channel = 0; channel < channels; channel++) {
     const out = mixed.getChannelData(channel);
     const src = phrase.getChannelData(channel);
     if (!out || out.length < total || !src) return phrase;
     out.set(breath, 0);
-    out.set(src, breathFrames);
+    const phraseAt = breathFrames + gapFrames;
+    for (let i = 0; i < src.length; i++) out[phraseAt + i] = src[i] * gain;
   }
   return mixed;
 }
