@@ -11,6 +11,8 @@ export const MAX_PHRASE_ATTEMPTS = 3;
 const MEMORY_PHRASES = 24;
 const SAVED_PHRASES = 30;
 const SAVED_WORDS = 16;
+// Hard-word rows kept on the wrap-up and in the saved coach log. The Worker accepts the same cap.
+const HARD_WORD_CAP = 40;
 
 const PROFILE_LABELS = ['masculine', 'androgynous', 'feminine', 'unsure'];
 // Fit on the calibration half of train-clean-100 only (see scripts/profile-split.mjs).
@@ -788,7 +790,38 @@ export function createCoachSession({
     cueHeld = ratio >= 0.7 ? 'yes' : ratio >= 0.35 ? 'partly' : 'no';
   }
 
-  function logEntry(at = clock) {
+  function plain(value, max) {
+    return String(value || '').replace(/[<>]/g, '').trim().slice(0, max);
+  }
+
+  /**
+   * Achieved: the phrase passed (a take with no coaching note and not too noisy).
+   * Attempted: the phrase was spoken at least once, including ignored noisy tries. Skipped lines count as neither.
+   * Total is the bank she was given. Problems are the full hard-word list, with each word's phonetic cause.
+   */
+  function buildWrap() {
+    const attempted = phraseRecords.filter(item => item.attempts > 0);
+    const achieved = attempted.filter(item => item.achieved);
+    const seen = new Map();
+    for (const phrase of attempted) {
+      for (const word of phrase.words) {
+        const text = plain(word.text, 32);
+        if (!text || !word.issue) continue;
+        const phonetics = plain(wordPhonetics(word.issue), 240);
+        if (!phonetics) continue;
+        const key = `${text.toLowerCase()}|${word.issue}`;
+        const row = seen.get(key) || { word: text, phonetics, count: 0 };
+        row.count += 1;
+        seen.set(key, row);
+      }
+    }
+    const problems = [...seen.values()]
+      .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word))
+      .slice(0, HARD_WORD_CAP);
+    return { achieved: achieved.length, attempted: attempted.length, total: lines.length, takes: phraseCount, problems };
+  }
+
+  function logEntry(at = clock, { ended = false } = {}) {
     const minutes = coachMinutes(at - startedAt);
     const saved = phrases.slice(-SAVED_PHRASES).map(phrase => ({
       prompt: phrase.prompt.slice(0, 180),
@@ -801,7 +834,8 @@ export function createCoachSession({
         flags: (word.flags || []).filter(flag => ISSUE_ORDER.includes(flag)).slice(0, 4)
       }))
     }));
-    return {
+    const wrap = buildWrap();
+    const entry = {
       id: sessionId,
       date: new Date(at).toISOString(),
       routineId,
@@ -815,9 +849,18 @@ export function createCoachSession({
         minutes,
         mode,
         summary: summary.slice(0, 240),
-        phrases: saved
+        phrases: saved,
+        wrap: {
+          achieved: wrap.achieved,
+          attempted: wrap.attempted,
+          total: wrap.total,
+          problems: wrap.problems
+        }
       }
     };
+    // Set only when practice has ended, so a short session is still kept.
+    if (ended) entry.ended = true;
+    return entry;
   }
 
   return {
@@ -833,9 +876,19 @@ export function createCoachSession({
       clock = at;
       if (paused || stopped) return { ignored: true };
       // Sustained loud noise may say so once. The same status does not go into the
-      // phrase log again until a real phrase has been heard.
+      // phrase log again until a real phrase has been heard. Those ignored tries
+      // still count toward the three-try cap, or a noisy stretch never moves on.
       if (result.tooNoisy && phrases.length && phrases[phrases.length - 1].tooNoisy) {
-        return { ignored: true, events: [] };
+        let attempts = lineAttempts;
+        let counted = false;
+        if (mode === 'lines' && !exhausted()) {
+          const record = currentRecord();
+          record.attempts += 1;
+          lineAttempts = record.attempts;
+          attempts = lineAttempts;
+          counted = true;
+        }
+        return { ignored: true, events: [], attempts, counted };
       }
       phraseCount += 1;
       const passed = !result.feedback?.spoken && !result.tooNoisy;
@@ -899,8 +952,8 @@ export function createCoachSession({
         stopped = true;
         paused = true;
         closeCurrent();
-        const entry = logEntry(at);
-        if (entry.actualMinutes >= 1) pendingSaves.push(entry);
+        const entry = logEntry(at, { ended: true });
+        pendingSaves.push(entry);
         return { type: 'stop', say: 'Stopping. I saved this drive.', entry };
       }
       if (name === 'next') {
@@ -909,8 +962,8 @@ export function createCoachSession({
         if (!next) {
           stopped = true;
           paused = true;
-          const entry = logEntry(at);
-          if (entry.actualMinutes >= 1) pendingSaves.push(entry);
+          const entry = logEntry(at, { ended: true });
+          pendingSaves.push(entry);
           return { type: 'next', finished: true, say: 'Stopping. I saved this drive.', entry };
         }
         return { type: 'next', say: `Next. ${next}` };
@@ -950,6 +1003,10 @@ export function createCoachSession({
       if (entry.actualMinutes < 1) return null;
       return entry;
     },
+    // The ended log, including a session shorter than a minute. Checkpoints stay on logEntry().
+    finalEntry(at = clock) {
+      return logEntry(at, { ended: true });
+    },
     checkpoint(at = Date.now()) {
       checks += 1;
       const entry = logEntry(at);
@@ -961,35 +1018,8 @@ export function createCoachSession({
       closeCurrent();
     },
     spokenSummary,
-    /**
-     * Achieved: the phrase passed (a take with no coaching note and not too noisy).
-     * Attempted: the phrase was spoken at least once. Skipped lines count as neither.
-     * Problems are words the coach already flagged, with that flag's existing phonetic name.
-     */
     wrapUp() {
-      const attempted = phraseRecords.filter(item => item.attempts > 0);
-      const achieved = attempted.filter(item => item.achieved);
-      const seen = new Map();
-      for (const phrase of attempted) {
-        for (const word of phrase.words) {
-          const text = String(word.text || '').trim();
-          if (!text || !word.issue) continue;
-          const key = `${text.toLowerCase()}|${word.issue}`;
-          const row = seen.get(key) || {
-            word: text,
-            issue: word.issue,
-            phonetics: wordPhonetics(word.issue),
-            count: 0
-          };
-          row.count += 1;
-          seen.set(key, row);
-        }
-      }
-      const problems = [...seen.values()]
-        .filter(row => row.phonetics)
-        .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word))
-        .slice(0, 12);
-      return { achieved: achieved.length, attempted: attempted.length, takes: phraseCount, problems };
+      return buildWrap();
     }
   };
 

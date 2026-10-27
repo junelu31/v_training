@@ -1,6 +1,6 @@
 # iPhone Safari Drive — what the harness covers
 
-June’s Drive session is about 40 minutes. The week-1 list is 53 lines. `npm run test:ios-drive` walks that list on a fake iPhone Safari. It does not use her phone, and it does not deploy.
+Drive practice has no set length. The week-1 list is 53 lines. `npm run test:ios-drive` walks that list on a fake iPhone Safari. It does not use her phone, and it does not deploy.
 
 The suite fails when the coach can say the opening line and then stay silent after she repeats it. Pushing samples in with `__liltDriveCoach.feed()` is a failure of the suite: that path skips the microphone, which is how the live bug survived PR #8.
 

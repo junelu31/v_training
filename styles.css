@@ -131,4 +131,10 @@
 .coach-problems{margin:0;white-space:pre-wrap;font-size:20px;line-height:1.45;max-width:28rem}
 @media(max-width:700px){.drive-voice{grid-template-columns:1fr}}
 .history-play{display:inline-block;margin-top:6px}
+.history-row{align-items:start}
+.history-hard{margin:8px 0 0;font-size:16px;line-height:1.45;color:var(--ink)}
+.history-hard summary{cursor:pointer}
+.history-hard ul{margin:8px 0 0;padding-left:1.1em}
+.history-hard li{margin:4px 0}
+.history-hard-empty{margin:8px 0 0;font-size:14px;color:var(--muted)}
 a.primary-button{display:inline-block;text-align:center;text-decoration:none}

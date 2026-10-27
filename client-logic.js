@@ -73,6 +73,49 @@ export function baselineReferences(attempts, { activityId = null, lessonId = nul
   return { phrase };
 }
 
+const HARD_WORD_CAP = 40;
+
+// A minute or more is a checkpoint. An ended coach log is kept even under a minute,
+// so tapping Done or backgrounding Safari cannot drop the wrap-up.
+export function keepDriveLog(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  if (Number.isFinite(entry.actualMinutes) && entry.actualMinutes >= 1) return true;
+  return entry.ended === true && entry.kind === 'coach' && !!entry.coach && typeof entry.coach === 'object';
+}
+
+// Null for older logs that have no wrap-up. Score matches the end-of-drive screen.
+export function readDriveWrap(entry) {
+  const wrap = entry?.kind === 'coach' ? entry.coach?.wrap : null;
+  if (!wrap || typeof wrap !== 'object' || Array.isArray(wrap)) return null;
+  if (!Number.isInteger(wrap.achieved) || wrap.achieved < 0 || !Number.isInteger(wrap.attempted) || wrap.attempted < 0) return null;
+  const problems = (Array.isArray(wrap.problems) ? wrap.problems : []).filter(row =>
+    row && typeof row.word === 'string' && row.word.trim() && typeof row.phonetics === 'string' && row.phonetics.trim()
+  ).map(row => ({
+    word: row.word,
+    phonetics: row.phonetics,
+    count: Number.isInteger(row.count) && row.count > 0 ? row.count : 1
+  }));
+  const score = wrap.attempted > 0 ? `${wrap.achieved} of ${wrap.attempted} phrases achieved` : 'No phrases yet';
+  const total = Number.isInteger(wrap.total) && wrap.total >= 0 ? wrap.total : null;
+  return { achieved: wrap.achieved, attempted: wrap.attempted, total, score, problems };
+}
+
+export function driveHardHtml(problems) {
+  const rows = Array.isArray(problems) ? problems : [];
+  if (!rows.length) return '<p class="history-hard-empty">No word was flagged as hard.</p>';
+  const items = rows.map(row => {
+    const extra = row.count > 1 ? ` · ${row.count} tries` : '';
+    return `<li>${escapeHtml(row.word)} — ${escapeHtml(row.phonetics)}${extra}</li>`;
+  }).join('');
+  return `<details class="history-hard"><summary>Words that were hard</summary><ul>${items}</ul></details>`;
+}
+
+export function driveHistoryExtras(entry) {
+  const wrap = readDriveWrap(entry);
+  if (!wrap) return { score: '', hardHtml: '' };
+  return { score: wrap.score, hardHtml: driveHardHtml(wrap.problems) };
+}
+
 export function trimHistory(value) {
   const source = value && typeof value === 'object' ? value : {};
   const attempts = (Array.isArray(source.attempts) ? source.attempts : []).slice(-MAX_ATTEMPTS).map(attempt => {
@@ -87,8 +130,15 @@ export function trimHistory(value) {
     };
   });
   const driveLog = (Array.isArray(source.driveLog) ? source.driveLog : []).slice(-MAX_DRIVE_LOG).map(entry => {
-    if (!entry || entry.kind !== 'coach' || !entry.coach || !Array.isArray(entry.coach.phrases)) return entry;
-    return { ...entry, coach: { ...entry.coach, phrases: entry.coach.phrases.slice(-30).map(phrase => ({ ...phrase, words: Array.isArray(phrase.words) ? phrase.words.slice(0, 16) : [] })) } };
+    if (!entry || entry.kind !== 'coach' || !entry.coach || typeof entry.coach !== 'object') return entry;
+    const coach = { ...entry.coach };
+    if (Array.isArray(coach.phrases)) {
+      coach.phrases = coach.phrases.slice(-30).map(phrase => ({ ...phrase, words: Array.isArray(phrase.words) ? phrase.words.slice(0, 16) : [] }));
+    }
+    if (coach.wrap && typeof coach.wrap === 'object' && Array.isArray(coach.wrap.problems)) {
+      coach.wrap = { ...coach.wrap, problems: coach.wrap.problems.slice(0, HARD_WORD_CAP) };
+    }
+    return { ...entry, coach };
   });
   const seen = new Set();
   const course = [];

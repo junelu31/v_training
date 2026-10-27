@@ -95,7 +95,34 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal(quietRound.coach.comfortKnown, false);
     assert.equal(quietRound.coach.comfortPaused, false);
     assert.equal(quietRound.coach.restSuggested, false);
-    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [{ ...coachEntry, coach: { ...coachEntry.coach, phrases: [{ ...coachEntry.coach.phrases[0], feedback: 'bad <b>' }] } }] }, version: 7 }, signedIn)).status, 400);
+    assert.equal(quietRound.coach.wrap, undefined);
+    const wrapped = {
+      ...quietCoach,
+      id: 'coach-wrap',
+      actualMinutes: 0,
+      coach: {
+        ...quietCoach.coach,
+        minutes: 0,
+        wrap: {
+          achieved: 1,
+          attempted: 2,
+          total: 53,
+          problems: [{ word: 'morning', phonetics: 'Pitch sitting low: sat low in pitch', count: 2 }]
+        }
+      }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, wrapped] }, version: 7 }, signedIn)).status, 200);
+    const wrapRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
+    assert.equal(wrapRound.actualMinutes, 0);
+    assert.equal(wrapRound.ended, undefined);
+    assert.deepEqual(wrapRound.coach.wrap, wrapped.coach.wrap);
+    const tooMany = {
+      ...wrapped,
+      coach: { ...wrapped.coach, wrap: { ...wrapped.coach.wrap, problems: Array.from({ length: 41 }, (_, index) => ({ word: `w${index}`, phonetics: 'sat low', count: 1 })) } }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, tooMany] }, version: 8 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...wrapped, coach: { ...wrapped.coach, wrap: { ...wrapped.coach.wrap, achieved: 3, attempted: 1 } } }] }, version: 8 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [{ ...coachEntry, coach: { ...coachEntry.coach, phrases: [{ ...coachEntry.coach.phrases[0], feedback: 'bad <b>' }] } }] }, version: 8 }, signedIn)).status, 400);
     const analyze = (headers, body) => mf.dispatchFetch('https://lilt.test/api/analyze', {
       method: 'POST', headers: { Origin: 'https://lilt.test', Cookie: signedIn, 'CF-Connecting-IP': '203.0.113.10', ...headers }, body
     });

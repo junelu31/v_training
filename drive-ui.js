@@ -30,6 +30,7 @@ let micGeneration = 0;
 let captureScratch = new Float32Array(0);
 let stayAwake = null;
 let visibilityHandler = null;
+let pagehideBound = false;
 let workletReady = null;
 let awaitingPermission = false;
 let driveVoiceId = COACH_VOICE;
@@ -677,6 +678,13 @@ function checkpoint() {
   } else session.queueSave(entry);
 }
 
+// Writes the log, including the wrap-up, before any awaited speech. localStorage
+// is updated inside save, so a Done tap or a Safari background cannot drop it.
+function publishEntry(entry) {
+  if (!entry || !savedDeps?.save) return;
+  savedDeps.save(entry);
+}
+
 function bindVisibility() {
   if (visibilityHandler) return;
   visibilityHandler = () => { onVisibility().catch(() => {}); };
@@ -724,7 +732,7 @@ async function finishSession(entry) {
   practiceOver = true;
   session?.markEnded?.();
   const summary = session?.wrapUp?.() || { achieved: 0, attempted: 0, problems: [] };
-  if (entry) savedDeps.save(entry);
+  publishEntry(entry || session?.finalEntry?.());
   showWrapUp(summary);
   await ensureStayAwake().stop();
   showAwake('off');
@@ -735,12 +743,14 @@ async function finishSession(entry) {
 
 async function endPractice() {
   if (practiceOver) {
+    publishEntry(session?.finalEntry?.());
     const overlay = el('coachOverlay');
     if (overlay) overlay.hidden = true;
     return;
   }
   if (!session || session.status().stopped) return;
   const result = session.command('stop', clock ? clock() : Date.now());
+  publishEntry(result.entry);
   if (result.say) await say(result.say);
   await finishSession(result.entry);
 }
@@ -845,16 +855,41 @@ export function planCoachTurn({
   if (judged.feedback) judged.feedback = { ...judged.feedback, text: localText, spoken: Boolean(localText) };
   const noted = coachSession.noteAnalysis(judged, { transcript: heard || prompt, at });
   if (noted.ignored) {
+    const afterIgnored = coachSession.status();
+    const leaveNoisy = noted.counted && shouldLeavePhrase({
+      ignored: false,
+      passed: false,
+      attempts: noted.attempts ?? afterIgnored.lineAttempts,
+      mode: afterIgnored.mode
+    });
+    if (!leaveNoisy) {
+      return {
+        type: 'ignored',
+        feedbackText: '',
+        extra: [],
+        follow: '',
+        say: '',
+        heardLine: 'Heard you.',
+        statusHeld: noisyStatusHeld,
+        checkpoint: false,
+        showLine: '',
+        showSub: '',
+        noted
+      };
+    }
+    const nextLine = coachSession.advance();
+    const bankDone = Boolean(!nextLine && coachSession.status().exhausted);
     return {
-      type: 'ignored',
+      type: 'practice',
       feedbackText: '',
       extra: [],
-      follow: '',
+      follow: nextLine ? `Next. ${nextLine}` : '',
+      finished: bankDone,
       say: '',
-      heardLine: 'Heard you.',
-      statusHeld: noisyStatusHeld,
+      heardLine: 'Heard you, but it was too noisy to judge.',
+      statusHeld: true,
       checkpoint: false,
-      showLine: '',
+      showLine: nextLine || 'Free talk whenever you are ready.',
       showSub: '',
       noted
     };
@@ -926,6 +961,7 @@ async function judgeTurn(turn) {
       userPaused = false;
       try { await listen(); } catch { /* the resume button stays available */ }
     }
+    if (result.type === 'stop' || result.finished) publishEntry(result.entry);
     if (result.say) await say(result.say);
     if (result.type === 'stop' || result.finished) await finishSession(result.entry);
     else if (result.entry) savedDeps.save(result.entry);
@@ -948,8 +984,10 @@ async function judgeTurn(turn) {
   if (plan.follow && session && !session.status().stopped && !hiddenByPage) await say(plan.follow);
   if (plan.finished && session && !hiddenByPage) {
     session.markEnded();
+    const entry = session.finalEntry(clock ? clock() : Date.now());
+    publishEntry(entry);
     await say('Stopping. I saved this drive.');
-    await finishSession(session.logEntry());
+    await finishSession(entry);
   }
 }
 
@@ -1127,7 +1165,10 @@ function presenceArgs() {
 }
 
 async function onVisibility() {
-  if (!session || session.status().stopped) return;
+  if (!session || session.status().stopped || practiceOver) {
+    if (document.visibilityState === 'hidden' && session?.status?.().stopped) publishEntry(session.finalEntry());
+    return;
+  }
   const visible = document.visibilityState === 'visible';
   hiddenByPage = !visible;
   try {
@@ -1264,6 +1305,13 @@ export function mountDriveCoach(deps) {
     consumeFile(el('coachFile').files?.[0], ready);
   };
   bindVisibility();
+  if (!pagehideBound) {
+    pagehideBound = true;
+    window.addEventListener('pagehide', () => {
+      if (!session?.status?.().stopped && !practiceOver) return;
+      publishEntry(session?.finalEntry?.());
+    });
+  }
   navigator.mediaDevices?.addEventListener?.('devicechange', () => {
     if (!session || session.status().stopped || hiddenByPage || userPaused) return;
     // The permission grant itself changes the route while the microphone is still opening.
