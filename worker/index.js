@@ -133,6 +133,29 @@ function validatePausedSession(value) {
 }
 
 const COACH_FLAGS = ['drop', 'chesty', 'heavy', 'fry', 'strain', 'dark', 'low', 'breath'];
+const HARD_WORD_CAP = 40;
+
+function validateWrap(wrap) {
+  if (wrap == null) return null;
+  if (typeof wrap !== 'object' || Array.isArray(wrap)) throw new HttpError(400, 'Invalid drive log.');
+  const count = (value, max) => {
+    if (!Number.isInteger(value) || value < 0 || value > max) throw new HttpError(400, 'Invalid drive log.');
+    return value;
+  };
+  const achieved = count(wrap.achieved, 500);
+  const attempted = count(wrap.attempted, 500);
+  const total = count(wrap.total, 500);
+  if (achieved > attempted) throw new HttpError(400, 'Invalid drive log.');
+  if (!Array.isArray(wrap.problems) || wrap.problems.length > HARD_WORD_CAP) throw new HttpError(400, 'Invalid drive log.');
+  const problems = wrap.problems.map(row => {
+    if (!row || typeof row.word !== 'string' || !row.word.trim() || row.word.length > 32) throw new HttpError(400, 'Invalid drive log.');
+    if (typeof row.phonetics !== 'string' || !row.phonetics.trim() || row.phonetics.length > 240) throw new HttpError(400, 'Invalid drive log.');
+    const tries = count(row.count, 500);
+    if (tries < 1) throw new HttpError(400, 'Invalid drive log.');
+    return { word: row.word, phonetics: row.phonetics, count: tries };
+  });
+  return { achieved, attempted, total, problems };
+}
 
 function validateCoach(entry) {
   const coach = entry.coach;
@@ -167,7 +190,8 @@ function validateCoach(entry) {
       })
     };
   });
-  return {
+  const wrap = validateWrap(coach.wrap);
+  const saved = {
     minutes: coach.minutes,
     mode: coach.mode,
     comfortKnown,
@@ -176,6 +200,8 @@ function validateCoach(entry) {
     summary: coach.summary,
     phrases
   };
+  if (wrap) saved.wrap = wrap;
+  return saved;
 }
 
 function validateDriveLog(driveLog) {

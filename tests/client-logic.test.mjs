@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { baselineReferences, dayOf, escapeHtml, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory, MAX_ATTEMPTS } from '../client-logic.js';
+import { baselineReferences, dayOf, driveHistoryExtras, escapeHtml, keepDriveLog, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory, MAX_ATTEMPTS } from '../client-logic.js';
 
 const run = promisify(execFile);
 
@@ -112,4 +112,46 @@ test('an evening UTC timestamp stays on the local day in Chicago', async () => {
 test('saved text is escaped before it is inserted as HTML', () => {
   assert.equal(escapeHtml(`" onmouseover="alert(1)`), '&quot; onmouseover=&quot;alert(1)');
   assert.equal(escapeHtml(`<b>`), '&lt;b&gt;');
+});
+
+test('drive history shows the wrap score and hard words, and older logs stay plain', () => {
+  const legacy = { id: 'old', kind: 'coach', date: '2026-10-01T00:00:00.000Z', coach: { summary: 'Two phrases held.', phrases: [] } };
+  assert.deepEqual(driveHistoryExtras(legacy), { score: '', hardHtml: '' });
+  assert.deepEqual(driveHistoryExtras({ id: 'check', actualMinutes: 0, comfort: 4 }), { score: '', hardHtml: '' });
+  const saved = {
+    id: 'new', kind: 'coach', actualMinutes: 0, ended: true,
+    coach: { wrap: { achieved: 1, attempted: 3, total: 53, problems: [{ word: 'morning', phonetics: 'Pitch sitting low: sat low in pitch', count: 2 }] } }
+  };
+  const extra = driveHistoryExtras(saved);
+  assert.equal(extra.score, '1 of 3 phrases achieved');
+  assert.match(extra.hardHtml, /<summary>Words that were hard<\/summary>/);
+  assert.match(extra.hardHtml, /morning — Pitch sitting low: sat low in pitch · 2 tries/);
+  const empty = driveHistoryExtras({ ...saved, coach: { wrap: { achieved: 0, attempted: 0, total: 53, problems: [] } } });
+  assert.equal(empty.score, 'No phrases yet');
+  assert.match(empty.hardHtml, /No word was flagged as hard/);
+  const hostile = driveHistoryExtras({
+    ...saved,
+    coach: { wrap: { achieved: 1, attempted: 1, total: 1, problems: [{ word: '<b>', phonetics: 'a <note>', count: 1 }] } }
+  });
+  assert.equal(hostile.hardHtml.includes('<b>'), false);
+  assert.match(hostile.hardHtml, /&lt;b&gt;/);
+  assert.equal(keepDriveLog(saved), true);
+  assert.equal(keepDriveLog({ actualMinutes: 12, kind: 'coach' }), true);
+  assert.equal(keepDriveLog({ actualMinutes: 0, comfort: 4 }), false);
+  const trimmed = trimHistory({
+    attempts: [],
+    completed: [],
+    driveLog: [{
+      ...saved,
+      coach: {
+        ...saved.coach,
+        phrases: [{ words: Array.from({ length: 20 }, () => ({ text: 'hi' })) }],
+        wrap: { ...saved.coach.wrap, problems: Array.from({ length: 45 }, (_, index) => ({ word: `w${index}`, phonetics: 'low', count: 1 })) }
+      }
+    }]
+  });
+  assert.equal(trimmed.driveLog[0].coach.wrap.problems.length, 40);
+  assert.equal(trimmed.driveLog[0].coach.wrap.achieved, 1);
+  assert.equal(trimmed.driveLog[0].coach.phrases[0].words.length, 16);
+  assert.equal(trimmed.driveLog[0].coach.summary, undefined);
 });

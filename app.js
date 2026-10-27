@@ -1,5 +1,5 @@
 import { baselineBlendWeight, baselineRelativeScore, blendOverall, describePitchDelta, spectralBalance, scoreBand, validatedOverall } from './voice-metrics.js';
-import { baselineReferences, dayOf, escapeHtml, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory } from './client-logic.js';
+import { baselineReferences, dayOf, driveHistoryExtras, escapeHtml, keepDriveLog, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory } from './client-logic.js';
 import { phraseDifficulty, orderPracticePhrases } from './drive-coach.js';
 import { mountDriveCoach } from './drive-ui.js';
 
@@ -721,6 +721,15 @@ async function clearSavedAudio(){try{await audioRequest('readwrite',store=>store
 
 function resetMeters(){samples=[];el('pitchValue').textContent='—';el('brightnessValue').textContent='—';el('movementValue').textContent='—';el('easeValue').textContent='—';el('visualizerIdle').style.display='grid';const c=el('waveCanvas');c.getContext('2d').clearRect(0,0,c.width,c.height)}
 
+function driveHistoryRow(drive){
+  const routine=window.COURSE_CONTENT.drives.find(item=>item.id===drive.routineId);
+  const coach=drive.kind==='coach';
+  const extra=driveHistoryExtras(drive);
+  const comfortText=Number.isInteger(drive.comfort)?`${drive.comfort}/5 comfort`:'';
+  const detail=extra.score||(coach?(drive.coach?.summary||'Drive coach'):'no voice score');
+  const minutes=drive.actualMinutes?`${drive.actualMinutes} min`:(Number.isInteger(drive.comfort)?'Check-in':(coach?'under 1 min':'Skipped'));
+  return `<div class="history-row"><div><b>${coach?'Drive coach':'Drive'} · ${escapeHtml(routine?.title||drive.routineId)}</b><br><small>${new Date(drive.date).toLocaleString()} · ${escapeHtml(detail)}</small>${extra.hardHtml}</div><b>${minutes}</b><small>${escapeHtml(comfortText)}</small><small>cue ${escapeHtml(drive.cueHeld)}</small><small></small><small></small></div>`;
+}
 function renderProgress(){
   const at=state.attempts, totalSec=at.reduce((s,a)=>s+(a.duration||0),0), avg=at.length?Math.round(at.reduce((s,a)=>s+a.overall,0)/at.length):0, best=at.length?Math.max(...at.map(a=>a.overall)):0;
   const selfRated=at.filter(a=>Number.isFinite(a.comfort)&&Number.isFinite(a.alignment)),progress=courseProgress();
@@ -733,7 +742,7 @@ function renderProgress(){
   el('statGrid').innerHTML=[['Practice time',`${Math.floor(totalSec/60)+driveMin}m`,`${at.length} saved takes · ${driveMin} drive min`],['Course',`${progress.percent}%`,`${progress.done} of ${progress.total} activities`],['Current streak',`${calculateStreak()} days`,'Consistency over intensity'],['Average score',avg||'—',averageDetail],['From baseline',fromBaseline.value,fromBaseline.detail],['Average comfort',comfort==='\u2014'?comfort:`${comfort}/5`,'Your rating after each take'],['Sounds like me',alignment==='\u2014'?alignment:`${alignment}/5`,'Your alignment rating']].map(x=>`<div class="stat-card"><span>${escapeHtml(x[0])}</span><strong>${escapeHtml(String(x[1]))}</strong><small>${escapeHtml(x[2])}</small></div>`).join('');
   const history=[...at.map(attempt=>({kind:'attempt',date:attempt.date,attempt})),...driveLogs().map(drive=>({kind:'drive',date:drive.date,drive}))].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,12);
   el('historyList').innerHTML=history.length?history.map(item=>{
-    if(item.kind==='drive'){const routine=window.COURSE_CONTENT.drives.find(drive=>drive.id===item.drive.routineId);const coach=item.drive.kind==='coach';const comfortText=Number.isInteger(item.drive.comfort)?`${item.drive.comfort}/5 comfort`:'';const detail=coach?(item.drive.coach?.summary||'Drive coach'):'no voice score';return `<div class="history-row"><div><b>${coach?'Drive coach':'Drive'} · ${escapeHtml(routine?.title||item.drive.routineId)}</b><br><small>${new Date(item.drive.date).toLocaleString()} · ${escapeHtml(detail)}</small></div><b>${item.drive.actualMinutes?`${item.drive.actualMinutes} min`:(Number.isInteger(item.drive.comfort)?'Check-in':'Skipped')}</b><small>${escapeHtml(comfortText)}</small><small>cue ${escapeHtml(item.drive.cueHeld)}</small><small></small><small></small></div>`}
+    if(item.kind==='drive')return driveHistoryRow(item.drive);
     const a=item.attempt;return `<div class="history-row"><div><b>${escapeHtml(a.lessonTitle)}</b><br><small>${new Date(a.date).toLocaleString()} · ${escapeHtml(presets[a.goal]?.name||a.goal)}</small><br><button type="button" class="text-button history-play" data-play-attempt="${escapeHtml(a.id)}">Play saved audio</button></div><b>${a.overall}</b><small>${a.scores.pitch} pitch</small><small>${a.scores.brightness} spectral</small><small>${a.comfort?`${a.comfort}/5 comfort`:`${a.scores.movement} move`}</small><small>${a.alignment?`${a.alignment}/5 self`:`${a.scores.ease} control`}</small></div>`;
   }).join(''):'<p class="privacy-line">No saved attempts yet.</p>';
   document.querySelectorAll('[data-play-attempt]').forEach(button=>button.onclick=()=>playSavedAttempt(button.dataset.playAttempt));
@@ -789,7 +798,7 @@ function bindEvents(){
     getPlanned:()=>30,
     getRoutine:()=>currentDrive()?.id||'week-1',
     getGoal:()=>presets[state.goal]||presets.balanced,
-    save(entry){if(!entry||entry.actualMinutes<1)return;if(!Array.isArray(state.driveLog))state.driveLog=[];const index=state.driveLog.findIndex(item=>item.id===entry.id);if(index>=0)state.driveLog[index]=entry;else state.driveLog.push(entry);persist({immediate:true});renderToday();renderProgress()}
+    save(entry){if(!keepDriveLog(entry))return;if(!Array.isArray(state.driveLog))state.driveLog=[];const index=state.driveLog.findIndex(item=>item.id===entry.id);if(index>=0)state.driveLog[index]=entry;else state.driveLog.push(entry);persist({immediate:true});renderToday();renderProgress()}
   });
   el('goalSelect').onchange=e=>setGoal(e.target.value);el('openDrive').onclick=()=>showView('drive');el('saveDrive').onclick=saveDriveCheckin;el('driveComfort').oninput=e=>{el('driveComfortOutput').textContent=`${e.target.value} / 5`};el('playReference').onclick=speakReference;el('playRamonaReference').onclick=playRamonaReference;el('ramonaClipSelect').onchange=()=>{el('ramonaReference').querySelector('iframe').src='';el('ramonaClipStatus').textContent='Press Play character clip to load this official clip.'};el('recordButton').onclick=toggleRecording;el('exitPractice').onclick=()=>showView('today');el('retryButton').onclick=()=>{resetMeters();showView('practice')};el('saveContinueButton').onclick=saveCurrent;
   el('cloudAnalyzeButton').onclick=analyzeWordsWithCloud;

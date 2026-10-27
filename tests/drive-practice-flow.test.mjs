@@ -9,6 +9,7 @@ import {
   phraseDifficulty,
   shouldLeavePhrase
 } from '../drive-coach.js';
+import { keepDriveLog } from '../client-logic.js';
 import { planCoachTurn } from '../drive-ui.js';
 
 const lines = ['Who is arriving? We are ready whenever you are.', 'Mia is here early.'];
@@ -119,6 +120,105 @@ test('three judged tries move to the next phrase, and a pass counts as achieved'
   assert.equal(summary.problems[0].count, 4);
 });
 
+test('a run of too-noisy takes still moves on after three tries', () => {
+  const session = createCoachSession({ lines: ['One line here.', 'Two is next.'], now: 0 });
+  const turn = { tooNoisy: true, reason: 'noise', sampleRate: 16000, samples: new Float32Array(0), hopVoicedMs: 800, frames: [] };
+  const first = planCoachTurn({ session, turn, heard: 'road', at: 1000 });
+  assert.equal(first.type, 'practice');
+  assert.equal(first.finished, false);
+  assert.equal(session.status().lineAttempts, 1);
+  assert.equal(session.prompt(), 'One line here.');
+  const second = planCoachTurn({ session, turn, heard: 'road', at: 2000 });
+  assert.equal(second.type, 'ignored');
+  assert.equal(session.status().lineAttempts, 2);
+  assert.equal(session.prompt(), 'One line here.');
+  const third = planCoachTurn({ session, turn, heard: 'road', at: 3000 });
+  assert.equal(third.type, 'practice');
+  assert.equal(third.finished, false);
+  assert.match(third.follow, /^Next\. /);
+  assert.equal(session.prompt(), 'Two is next.');
+  assert.equal(session.status().lineAttempts, 0);
+  assert.equal(session.status().phrases, 1);
+  // The next line starts noisy too, because the last logged take was noise. Those tries still count.
+  assert.equal(planCoachTurn({ session, turn, heard: 'road', at: 4000 }).type, 'ignored');
+  assert.equal(session.status().lineAttempts, 1);
+  assert.equal(planCoachTurn({ session, turn, heard: 'road', at: 5000 }).type, 'ignored');
+  assert.equal(session.status().lineAttempts, 2);
+  const last = planCoachTurn({ session, turn, heard: 'road', at: 6000 });
+  assert.equal(last.finished, true);
+  assert.equal(session.status().exhausted, true);
+  const summary = session.wrapUp();
+  assert.equal(summary.attempted, 2);
+  assert.equal(summary.achieved, 0);
+  assert.equal(summary.total, 2);
+  const entry = session.finalEntry(6000);
+  assert.equal(entry.ended, true);
+  assert.equal(entry.actualMinutes, 0);
+  assert.equal(entry.coach.wrap.attempted, 2);
+  assert.equal(entry.coach.wrap.achieved, 0);
+  assert.equal(entry.coach.wrap.total, 2);
+  assert.equal(session.logEntry(), null);
+  assert.equal(keepDriveLog(entry), true);
+  assert.equal(keepDriveLog({ actualMinutes: 0, kind: 'coach', coach: { wrap: entry.coach.wrap } }), false);
+});
+
+test('ending a short drive still stores the hard-word wrap', () => {
+  const session = createCoachSession({ lines: ['Good morning there.'], now: 0, id: 'short-wrap' });
+  session.noteAnalysis(coached, { transcript: 'morning', at: 1000 });
+  const ended = session.command('stop', 4000);
+  assert.equal(ended.entry.ended, true);
+  assert.equal(ended.entry.actualMinutes, 0);
+  assert.equal(ended.entry.coach.wrap.achieved, 0);
+  assert.equal(ended.entry.coach.wrap.attempted, 1);
+  assert.equal(ended.entry.coach.wrap.total, 1);
+  assert.equal(ended.entry.coach.wrap.problems[0].word, 'morning');
+  assert.match(ended.entry.coach.wrap.problems[0].phonetics, /Pitch sitting low/);
+  assert.match(ended.entry.coach.wrap.problems[0].phonetics, /sat low in pitch/);
+  assert.equal(keepDriveLog(ended.entry), true);
+  const paused = createCoachSession({ lines: ['Good morning there.'], now: 0 });
+  paused.command('pause', 0);
+  const ignored = paused.noteAnalysis(coached, { transcript: 'morning', at: 1000 });
+  assert.equal(ignored.ignored, true);
+  assert.equal(ignored.counted, undefined);
+  assert.equal(paused.status().lineAttempts, 0);
+});
+
+test('the saved wrap keeps the full hard-word list', () => {
+  const bank = Array.from({ length: 15 }, (_, index) => `Line ${index} is a phrase.`);
+  const session = createCoachSession({ lines: bank, now: 0, id: 'hard-list' });
+  for (let index = 0; index < bank.length; index++) {
+    session.noteAnalysis({
+      tooNoisy: false,
+      feedback: { spoken: true, text: 'sat low', cursor: 1 },
+      words: [{ text: `word${index}`, flags: [{ issue: 'low', speak: true }] }],
+      profile: { label: 'androgynous' }
+    }, { at: 30000 + index * 1000 });
+    if (index < bank.length - 1) session.advance();
+  }
+  const summary = session.wrapUp();
+  assert.equal(summary.problems.length, 15);
+  assert.equal(summary.total, 15);
+  const ended = session.command('stop', 90000);
+  assert.equal(ended.entry.coach.wrap.problems.length, 15);
+  assert.equal(ended.entry.coach.wrap.problems[0].word, 'word0');
+  assert.equal(ended.entry.ended, true);
+});
+
+test('ending the drive publishes the wrap before the goodbye is spoken', () => {
+  const source = readFileSync(new URL('../drive-ui.js', import.meta.url), 'utf8');
+  const endPractice = source.slice(source.indexOf('async function endPractice'), source.indexOf('function spokenLine'));
+  assert.ok(endPractice.indexOf('publishEntry(result.entry)') < endPractice.indexOf('await say(result.say)'));
+  const judge = source.slice(source.indexOf('async function judgeTurn'), source.indexOf('function pushCaptured'));
+  const publishStop = judge.indexOf("if (result.type === 'stop' || result.finished) publishEntry(result.entry);");
+  const sayStop = judge.indexOf('if (result.say) await say(result.say);');
+  assert.ok(publishStop > -1 && publishStop < sayStop);
+  const bankSave = judge.indexOf("publishEntry(entry);");
+  const bankSay = judge.indexOf("await say('Stopping. I saved this drive.');");
+  assert.ok(bankSave > -1 && bankSave < bankSay);
+  assert.match(source, /pagehide/);
+  assert.match(source, /visibilityState === 'hidden'/);
+});
+
 test('the drive page no longer offers a 20, 30, or 40 minute session', () => {
   const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -129,4 +229,6 @@ test('the drive page no longer offers a 20, 30, or 40 minute session', () => {
   assert.equal(html.includes('id="driveActual"'), false);
   assert.match(html, /id="coachEnd"/);
   assert.match(html, />End practice</);
+  const course = readFileSync(new URL('../course.js', import.meta.url), 'utf8');
+  assert.equal(course.includes('reps:'), false);
 });
