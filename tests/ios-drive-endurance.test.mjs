@@ -589,7 +589,8 @@ test('iPhone Safari: the mic sheet, then her repeat, then spoken feedback', asyn
   }
 });
 
-test('a 53-line drive keeps speaking and does not leak paused or capture state', { timeout: 180000 }, async () => {
+// A miss now plays a measured sentence plus a technique clip, so the simulated bank runs longer.
+test('a 53-line drive keeps speaking and does not leak paused or capture state', { timeout: 300000 }, async () => {
   assert.ok(DRIVE_LINES.length >= 53, `week-1 drive has ${DRIVE_LINES.length} lines, expected at least 53`);
   const page = installPage();
   try {

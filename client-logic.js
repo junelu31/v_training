@@ -97,7 +97,15 @@ export function readDriveWrap(entry) {
   }));
   const score = wrap.attempted > 0 ? `${wrap.achieved} of ${wrap.attempted} phrases achieved` : 'No phrases yet';
   const total = Number.isInteger(wrap.total) && wrap.total >= 0 ? wrap.total : null;
-  return { achieved: wrap.achieved, attempted: wrap.attempted, total, score, problems };
+  const notes = (Array.isArray(wrap.notes) ? wrap.notes : []).filter(row =>
+    row && typeof row.phrase === 'string' && row.phrase.trim() && typeof row.detail === 'string' && row.detail.trim()
+  ).slice(0, HARD_WORD_CAP).map(row => ({
+    phrase: row.phrase,
+    issue: typeof row.issue === 'string' ? row.issue : '',
+    detail: row.detail,
+    delta: typeof row.delta === 'string' ? row.delta : ''
+  }));
+  return { achieved: wrap.achieved, attempted: wrap.attempted, total, score, problems, notes };
 }
 
 export function driveHardHtml(problems) {
@@ -110,10 +118,20 @@ export function driveHardHtml(problems) {
   return `<details class="history-hard"><summary>Words that were hard</summary><ul>${items}</ul></details>`;
 }
 
+export function driveNotesHtml(notes) {
+  const rows = (Array.isArray(notes) ? notes : []).filter(row => row && row.phrase && row.detail);
+  if (!rows.length) return '';
+  const items = rows.map(row => {
+    const delta = row.delta ? ` (${escapeHtml(row.delta)})` : '';
+    return `<li>${escapeHtml(row.phrase)} — ${escapeHtml(row.detail)}${delta}</li>`;
+  }).join('');
+  return `<details class="history-hard"><summary>What the takes measured</summary><ul>${items}</ul></details>`;
+}
+
 export function driveHistoryExtras(entry) {
   const wrap = readDriveWrap(entry);
   if (!wrap) return { score: '', hardHtml: '' };
-  return { score: wrap.score, hardHtml: driveHardHtml(wrap.problems) };
+  return { score: wrap.score, hardHtml: `${driveHardHtml(wrap.problems)}${driveNotesHtml(wrap.notes)}` };
 }
 
 export function trimHistory(value) {
@@ -135,8 +153,11 @@ export function trimHistory(value) {
     if (Array.isArray(coach.phrases)) {
       coach.phrases = coach.phrases.slice(-30).map(phrase => ({ ...phrase, words: Array.isArray(phrase.words) ? phrase.words.slice(0, 16) : [] }));
     }
-    if (coach.wrap && typeof coach.wrap === 'object' && Array.isArray(coach.wrap.problems)) {
-      coach.wrap = { ...coach.wrap, problems: coach.wrap.problems.slice(0, HARD_WORD_CAP) };
+    if (coach.wrap && typeof coach.wrap === 'object') {
+      const wrap = { ...coach.wrap };
+      if (Array.isArray(wrap.problems)) wrap.problems = wrap.problems.slice(0, HARD_WORD_CAP);
+      if (Array.isArray(wrap.notes)) wrap.notes = wrap.notes.slice(0, HARD_WORD_CAP);
+      coach.wrap = wrap;
     }
     return { ...entry, coach };
   });

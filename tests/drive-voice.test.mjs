@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, statSync, existsSync } from 'node:fs';
-import { CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
+import { CUE_LIBRARY, FEEDBACK_LINES, IMPROVED_LINES, ISSUE_ORDER, fillWord, problemPhrase } from '../drive-cues.js';
 import { SESSION_LINES } from '../drive-session.js';
 import { createCoachSession, followUpLine, openingLine } from '../drive-coach.js';
 import { COACH_LINES, COACH_VOICE, COACH_VOICE_SPEED, PRACTICE_LEAD_LINES, PRACTICE_VOICE, clipFile, fixedVoiceLines, fragmentLines, fragmentWords, planSpeech, voiceKey } from '../drive-voice.js';
@@ -147,8 +147,14 @@ test('the practice voice has its own clips for cues, leads, and the same phrase 
     assert.ok(existsSync(file), `missing practice file for: ${line}`);
     assert.equal(PRACTICE_CLIPS[voiceKey(line)], clipFile(line, PRACTICE_VOICE));
   }
+  const feedbackPieces = new Set(Object.values(FEEDBACK_LINES).flat()
+    .flatMap(line => line.split(/'?\{word\}'?/)).map(part => fragmentWords(part).join(' ')).filter(Boolean));
   for (const line of fragmentLines(phrases)) {
     const key = `~${line}`;
+    if (feedbackPieces.has(line) && !PRACTICE_CLIPS[key]) {
+      if (VOICE_CLIPS[key]) assert.ok(existsSync(new URL(`../public/${VOICE_CLIPS[key]}`, import.meta.url)), key);
+      continue;
+    }
     assert.ok(PRACTICE_CLIPS[key], key);
     assert.ok(existsSync(new URL(`../public/${clipFile(key, PRACTICE_VOICE)}`, import.meta.url)), key);
   }
@@ -162,5 +168,6 @@ test('the practice voice has its own clips for cues, leads, and the same phrase 
   }
   const total = Object.values(PRACTICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
   assert.ok(total < 16 * 1024 * 1024, `practice clips total ${total} bytes`);
-  assert.ok(Object.keys(PRACTICE_CLIPS).length >= Object.keys(VOICE_CLIPS).length - 30);
+  // Praise, the numberless technique tips, and the pass notes are Aurora-only.
+  assert.ok(Object.keys(PRACTICE_CLIPS).length >= Object.keys(VOICE_CLIPS).length - 40);
 });

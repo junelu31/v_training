@@ -116,6 +116,25 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal(wrapRound.actualMinutes, 0);
     assert.equal(wrapRound.ended, undefined);
     assert.deepEqual(wrapRound.coach.wrap, wrapped.coach.wrap);
+    const noted = {
+      ...wrapped,
+      id: 'coach-notes',
+      coach: {
+        ...wrapped.coach,
+        wrap: {
+          ...wrapped.coach.wrap,
+          notes: [{ phrase: 'morning', issue: 'low', detail: 'Your pitch averaged about 150 hertz, Aurora sits near 172.', delta: '150 Hz vs 172 Hz' }]
+        }
+      }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, noted] }, version: 8 }, signedIn)).status, 200);
+    const notedRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
+    assert.deepEqual(notedRound.coach.wrap.notes, noted.coach.wrap.notes);
+    const marked = {
+      ...noted,
+      coach: { ...noted.coach, wrap: { ...noted.coach.wrap, notes: [{ phrase: 'morning', issue: 'low', detail: 'bad <b>', delta: '1' }] } }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, marked] }, version: 9 }, signedIn)).status, 400);
     const tooMany = {
       ...wrapped,
       coach: { ...wrapped.coach, wrap: { ...wrapped.coach.wrap, problems: Array.from({ length: 41 }, (_, index) => ({ word: `w${index}`, phonetics: 'sat low', count: 1 })) } }
