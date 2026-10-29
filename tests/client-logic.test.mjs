@@ -126,6 +126,24 @@ test('drive history shows the wrap score and hard words, and older logs stay pla
   assert.equal(extra.score, '1 of 3 phrases achieved');
   assert.match(extra.hardHtml, /<summary>Words that were hard<\/summary>/);
   assert.match(extra.hardHtml, /morning — Pitch sitting low: sat low in pitch · 2 tries/);
+  assert.equal(extra.hardHtml.includes('What the takes measured'), false);
+  const measured = driveHistoryExtras({
+    ...saved,
+    coach: {
+      wrap: {
+        ...saved.coach.wrap,
+        notes: [{ phrase: 'morning', issue: 'low', detail: 'Your pitch averaged about 150 hertz.', delta: '150 Hz vs 172 Hz' }]
+      }
+    }
+  });
+  assert.match(measured.hardHtml, /What the takes measured/);
+  assert.match(measured.hardHtml, /150 Hz vs 172 Hz/);
+  const hostileNote = driveHistoryExtras({
+    ...saved,
+    coach: { wrap: { ...saved.coach.wrap, notes: [{ phrase: '<b>', detail: 'a <note>', delta: '1 <2>' }] } }
+  });
+  assert.equal(hostileNote.hardHtml.includes('<b>'), false);
+  assert.match(hostileNote.hardHtml, /&lt;b&gt;/);
   const empty = driveHistoryExtras({ ...saved, coach: { wrap: { achieved: 0, attempted: 0, total: 53, problems: [] } } });
   assert.equal(empty.score, 'No phrases yet');
   assert.match(empty.hardHtml, /No word was flagged as hard/);

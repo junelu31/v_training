@@ -71,6 +71,17 @@ test('every Drive clip has a playback gain, and hot clips come down without a bl
   assert.equal(TRUE_PEAK_CEILING_DBTP, -3);
 });
 
+test('baked feedback clips hotter than -23 LUFS are turned down, not boosted', () => {
+  for (const file of ['voice/d9cba173.mp3', 'voice/bb90c751.mp3']) {
+    const [lufs, truePeak, rms] = CLIP_LEVELS[file];
+    assert.ok(lufs > SPEECH_TARGET_LUFS, file);
+    const gainDb = playbackGainDb({ lufs, truePeakDb: truePeak, rmsDb: rms });
+    assert.ok(clipPlaybackGain(file) < 1, file);
+    assert.ok(clipPlaybackGain(file) <= 1, file);
+    assert.ok(lufs + gainDb <= SPEECH_TARGET_LUFS + 0.05, file);
+  }
+});
+
 test('a clip is boosted only when it is more than 3 dB under target, and only up to that target', () => {
   const safePeak = -20;
   assert.ok(Math.abs(playbackGainDb({ lufs: -22, truePeakDb: safePeak, rmsDb: -22 }) - (-1)) < 1e-9);

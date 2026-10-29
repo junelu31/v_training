@@ -1,4 +1,4 @@
-import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
+import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, FEEDBACK_LINES, PRAISE_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
 import { PRACTICE_SESSION_LINES, SESSION_LINES } from './drive-session.js';
 
 // Spoken lines for Drive coach. Every fixed line has a pre-rendered clip.
@@ -114,6 +114,10 @@ export const SUMMARY_FRAGMENTS = ['phrases', 'held', 'had a note', 'too noisy to
 const GLUE_FRAGMENTS = ['and'];
 export const MAX_COUNT = 199;
 
+function templatePieces(lines) {
+  return lines.flatMap(line => String(line).split(/'?\{word\}'?/)).map(part => part.trim()).filter(Boolean);
+}
+
 export function fragmentLines(phrases = []) {
   const words = new Set(phrases.flatMap(fragmentWords));
   const problems = new Set();
@@ -121,9 +125,10 @@ export function fragmentLines(phrases = []) {
     problems.add(problemPhrase([a]));
     for (const b of ISSUE_ORDER) if (a !== b) problems.add(problemPhrase([a, b]));
   }
-  const improved = IMPROVED_LINES.flatMap(line => line.split(/'?\{word\}'?/)).map(part => part.trim()).filter(Boolean);
+  const improved = templatePieces(IMPROVED_LINES);
+  const feedback = templatePieces(Object.values(FEEDBACK_LINES).flat());
   const counts = Array.from({ length: MAX_COUNT + 1 }, (_, n) => String(n));
-  const all = [...words, ...problems, ...improved, ...SUMMARY_FRAGMENTS, ...GLUE_FRAGMENTS, ...counts];
+  const all = [...words, ...problems, ...improved, ...feedback, ...SUMMARY_FRAGMENTS, ...GLUE_FRAGMENTS, ...counts];
   const seen = new Map();
   for (const line of all) {
     const key = fragmentKey(line);
@@ -155,7 +160,9 @@ export function fixedVoiceLines(phrases = [], voice = COACH_VOICE) {
   const cues = Object.values(practice ? PRACTICE_CUE_LIBRARY : CUE_LIBRARY).flatMap(entry => entry.variants);
   const leads = practice ? PRACTICE_LEAD_LINES : LEAD_LINES;
   const session = Object.values(practice ? PRACTICE_SESSION_LINES : SESSION_LINES);
-  const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases];
+  // Praise is Aurora's. The practice voice has no bake for these short lines.
+  const praise = practice ? [] : PRAISE_LINES;
+  const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases, ...praise];
   const seen = new Map();
   for (const line of all) if (line && !seen.has(voiceKey(line))) seen.set(voiceKey(line), line.trim());
   return [...seen.values()];
@@ -177,14 +184,23 @@ export function planSpeech(text, hasClip) {
     if (found) {
       plan.push({ clip: chunks.slice(i, found).join(' ') });
       i = found;
-    } else {
-      const last = plan[plan.length - 1];
-      if (last && 'text' in last) last.text += ` ${chunks[i]}`;
-      else plan.push({ text: chunks[i] });
-      i += 1;
+      continue;
     }
+    // A measured sentence often has no whole-line clip. Stitch that sentence on
+    // its own so the next sentence can still play from fragments. Sentences that
+    // stitch fails stay one fallback voice.
+    const stitched = stitch(chunks[i], hasClip);
+    if (stitched) {
+      plan.push(...stitched);
+      i += 1;
+      continue;
+    }
+    const last = plan[plan.length - 1];
+    if (last && 'text' in last) last.text += ` ${chunks[i]}`;
+    else plan.push({ text: chunks[i] });
+    i += 1;
   }
-  return plan.flatMap(part => ('text' in part ? stitch(part.text, hasClip) || [part] : [part]));
+  return plan;
 }
 
 export function clipFile(text, voice = COACH_VOICE) {

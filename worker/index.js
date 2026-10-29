@@ -133,7 +133,9 @@ function validatePausedSession(value) {
 }
 
 const COACH_FLAGS = ['drop', 'chesty', 'heavy', 'fry', 'strain', 'dark', 'low', 'breath'];
+const NOTE_ISSUES = [...COACH_FLAGS, 'high', 'flat', 'quiet', 'fast', 'misread'];
 const HARD_WORD_CAP = 40;
+const NOTE_CAP = 40;
 
 function validateWrap(wrap) {
   if (wrap == null) return null;
@@ -154,7 +156,32 @@ function validateWrap(wrap) {
     if (tries < 1) throw new HttpError(400, 'Invalid drive log.');
     return { word: row.word, phonetics: row.phonetics, count: tries };
   });
-  return { achieved, attempted, total, problems };
+  const saved = { achieved, attempted, total, problems };
+  if (wrap.notes == null) return saved;
+  if (!Array.isArray(wrap.notes) || wrap.notes.length > NOTE_CAP) throw new HttpError(400, 'Invalid drive log.');
+  const clip = (value, max, required) => {
+    if (value == null || value === '') {
+      if (!required) return '';
+      throw new HttpError(400, 'Invalid drive log.');
+    }
+    if (typeof value !== 'string' || /[<>]/.test(value)) throw new HttpError(400, 'Invalid drive log.');
+    const text = value.trim();
+    if (!text || text.length > max) throw new HttpError(400, 'Invalid drive log.');
+    return text;
+  };
+  saved.notes = wrap.notes.map(row => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new HttpError(400, 'Invalid drive log.');
+    if (!NOTE_ISSUES.includes(row.issue)) throw new HttpError(400, 'Invalid drive log.');
+    const note = {
+      phrase: clip(row.phrase, 120, true),
+      issue: row.issue,
+      detail: clip(row.detail, 180, true)
+    };
+    const delta = clip(row.delta, 80, false);
+    if (delta) note.delta = delta;
+    return note;
+  });
+  return saved;
 }
 
 function validateCoach(entry) {
@@ -381,7 +408,9 @@ function wordsFromTranscript(output) {
 
 async function speakLine(env, say) {
   try {
-    const response = await env.AI.run('@cf/deepgram/aura-2-en', { text: say, speaker: 'luna', encoding: 'mp3' }, { returnRawResponse: true });
+    // Dynamic lines are not baked. Deepgram Aura-2 "aurora" is the closest speaker
+    // on this model: adult, American, feminine. Pre-baked clips stay xAI Aurora.
+    const response = await env.AI.run('@cf/deepgram/aura-2-en', { text: say, speaker: 'aurora', encoding: 'mp3' }, { returnRawResponse: true });
     const bytes = response?.arrayBuffer ? new Uint8Array(await response.arrayBuffer()) : new Uint8Array(response);
     if (!bytes?.length) return null;
     return { model: '@cf/deepgram/aura-2-en', audioBase64: toBase64(bytes), mime: 'audio/mpeg' };

@@ -1,5 +1,5 @@
 import { median } from './drive-dsp.js';
-import { CUE_LIBRARY, cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES, SPEAK_ORDER, feedbackLine } from './drive-cues.js';
+import { CUE_LIBRARY, cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES, SPEAK_ORDER, techniqueLine, PASS_NOTES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
 import { COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
 
@@ -393,37 +393,249 @@ export function joinIssueWords(texts) {
   return `${words.slice(0, -1).join(', ')}, and ${words[words.length - 1]}`;
 }
 
+const VOICE_TARGET = {
+  [COACH_VOICE]: { name: 'Aurora', hz: 172, brightness: -13.6, rangeSt: 8.3, h1h2: -5.9 },
+  [PRACTICE_VOICE]: { name: 'the practice voice', hz: 212, brightness: null, rangeSt: 8, h1h2: 8 }
+};
+
+function voiceTarget(voice) {
+  return VOICE_TARGET[voice] || VOICE_TARGET[COACH_VOICE];
+}
+
+function spokenName(word) {
+  return String(word || '').replace(/[<>"]/g, '').trim();
+}
+
+function coachingContext(words, voice) {
+  const target = voiceTarget(voice);
+  const pitched = words.map(word => word.hz).filter(hz => Number.isFinite(hz) && hz > 0);
+  const rangeSt = pitched.length >= 2 ? 12 * Math.log2(Math.max(...pitched) / Math.min(...pitched)) : NaN;
+  const body = words.slice(0, Math.max(1, words.length - 1)).map(word => word.hz).filter(Number.isFinite);
+  const syllables = words.reduce((sum, word) => sum + estimateSyllables(word.text), 0);
+  const voiced = words.reduce((sum, word) => sum + (word.voiced || 0), 0);
+  const paceMs = syllables && voiced ? (voiced * FRAME_HOP_SEC * 1000) / syllables : NaN;
+  return { target, rangeSt, bodyHz: finiteMedian(body), paceMs };
+}
+
+function deviationScore(word, issue, ctx) {
+  const target = ctx.target;
+  switch (issue) {
+    case 'drop': {
+      const fall = Number.isFinite(word.startHz) && Number.isFinite(word.endHz) ? word.startHz - word.endHz : 0;
+      const fromBody = Number.isFinite(ctx.bodyHz) && Number.isFinite(word.hz) ? ctx.bodyHz - word.hz : 0;
+      const gap = Math.max(fall, fromBody);
+      return gap > 0 ? gap / 36 : 0.7;
+    }
+    case 'low':
+      return Number.isFinite(word.hz) ? Math.max(0, target.hz - word.hz) / 20 : 0.7;
+    case 'high':
+      return Number.isFinite(word.hz) ? Math.max(0, word.hz - target.hz) / 25 : 0.7;
+    case 'chesty':
+    case 'dark': {
+      const bright = Number.isFinite(word.brightness) ? word.brightness : word.resonance;
+      if (Number.isFinite(bright) && target.brightness != null) return Math.max(0, target.brightness - bright) / 6;
+      if (Number.isFinite(word.f2)) return Math.max(0, 1700 - word.f2) / 400;
+      return 0.7;
+    }
+    case 'heavy':
+      return Number.isFinite(word.tilt) ? Math.max(0, -6 - word.tilt) / 4 : 0.7;
+    case 'fry':
+      return Math.max(word.fry || 0, word.fryPeak || 0) || 0.7;
+    case 'strain':
+      if (Number.isFinite(word.h1h2) && word.h1h2 < -4) return Math.max(0, -4 - word.h1h2) / 6;
+      return Math.max(word.unstable || 0, 0.7);
+    case 'breath':
+      return word.breath > 0 ? word.breath : 0.7;
+    case 'flat':
+      return Number.isFinite(ctx.rangeSt) ? Math.max(0, target.rangeSt - ctx.rangeSt) / target.rangeSt : 0.7;
+    case 'quiet':
+      return Number.isFinite(word.rms) && word.rms > 0 ? Math.min(2, 0.02 / word.rms) : 0.7;
+    case 'fast':
+      return Number.isFinite(ctx.paceMs) && ctx.paceMs > 0 ? Math.min(2, 110 / ctx.paceMs) : 0.75;
+    case 'misread':
+      return 1.35;
+    default:
+      return 0.7;
+  }
+}
+
+function mainIssue(words, voice) {
+  const ctx = coachingContext(words, voice);
+  const candidates = [];
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index];
+    if (word.heard === false) continue;
+    for (const issue of spokenIssues(word)) {
+      candidates.push({ issue, word, index, score: deviationScore(word, issue, ctx) });
+    }
+  }
+  candidates.sort((a, b) => {
+    if (Math.abs(b.score - a.score) > 0.02) return b.score - a.score;
+    const order = SPEAK_ORDER.indexOf(a.issue) - SPEAK_ORDER.indexOf(b.issue);
+    if (order) return order;
+    return a.index - b.index;
+  });
+  return { best: candidates[0] || null, ctx };
+}
+
+function rangeClaim(rangeSt, targetSt) {
+  if (!Number.isFinite(rangeSt) || !(targetSt > 0)) return 'well under';
+  const ratio = rangeSt / targetSt;
+  if (ratio < 0.2) return 'well under';
+  if (ratio < 0.45) return 'about a third of';
+  if (ratio < 0.7) return 'about half of';
+  return 'short of';
+}
+
+function resonanceRead(word, target) {
+  const bright = Number.isFinite(word.brightness) ? word.brightness : word.resonance;
+  const name = spokenName(word.text);
+  if (Number.isFinite(bright) && target.brightness != null) {
+    return {
+      sentence: `Resonance on ${name} was about ${Math.round(bright)} decibels, darker than Aurora near ${Math.round(target.brightness)}.`,
+      delta: `${bright.toFixed(1)} dB vs ${target.brightness} dB`
+    };
+  }
+  if (Number.isFinite(word.f2)) {
+    return {
+      sentence: `Resonance was darker than the target on ${name}.`,
+      delta: `F2 ${Math.round(word.f2)} Hz`
+    };
+  }
+  return { sentence: `Resonance was darker than the target on ${name}.`, delta: '' };
+}
+
+/** What the take did, plus a short comparison when the grader measured one. */
+function observation(issue, word, ctx) {
+  const name = spokenName(word.text) || 'that word';
+  const target = ctx.target;
+  switch (issue) {
+    case 'drop':
+      if (Number.isFinite(word.startHz) && Number.isFinite(word.endHz) && word.startHz - word.endHz >= 8) {
+        return {
+          sentence: `Your voice fell at the end of ${name}, from ${Math.round(word.startHz)} to ${Math.round(word.endHz)} hertz.`,
+          delta: `${Math.round(word.startHz)} to ${Math.round(word.endHz)} Hz`
+        };
+      }
+      return { sentence: `Your voice fell at the end of ${name}.`, delta: '' };
+    case 'low':
+      if (Number.isFinite(word.hz)) {
+        return {
+          sentence: `Your pitch averaged about ${Math.round(word.hz)} hertz, ${target.name} sits near ${target.hz}.`,
+          delta: `${Math.round(word.hz)} Hz vs ${target.hz} Hz`
+        };
+      }
+      return { sentence: `Pitch sat low on ${name}.`, delta: '' };
+    case 'high':
+      if (Number.isFinite(word.hz)) {
+        return {
+          sentence: `Your pitch averaged about ${Math.round(word.hz)} hertz, above ${target.name} near ${target.hz}.`,
+          delta: `${Math.round(word.hz)} Hz vs ${target.hz} Hz`
+        };
+      }
+      return { sentence: `Pitch sat high on ${name}.`, delta: '' };
+    case 'chesty':
+    case 'dark':
+      return resonanceRead(word, target);
+    case 'heavy':
+      return {
+        sentence: Number.isFinite(word.tilt) ? `The tone went heavy on ${name}.` : `${name} went heavy.`,
+        delta: Number.isFinite(word.tilt) ? `tilt ${word.tilt.toFixed(1)} dB/octave` : ''
+      };
+    case 'fry':
+      if (word.fry > 0) {
+        return {
+          sentence: `Fry on ${name}, about ${Math.round(word.fry * 100)} percent of the word.`,
+          delta: `${Math.round(word.fry * 100)}% fry`
+        };
+      }
+      return { sentence: `Fry on ${name}.`, delta: '' };
+    case 'strain':
+      return {
+        sentence: `The tone was pressed on ${name}.`,
+        delta: Number.isFinite(word.h1h2) ? `H1-H2 ${word.h1h2.toFixed(1)} dB vs ${target.h1h2} dB` : ''
+      };
+    case 'breath':
+      return {
+        sentence: `Too much air on ${name}.`,
+        delta: word.breath > 0 ? `${Math.round(word.breath * 100)}% breathy` : ''
+      };
+    case 'flat': {
+      const whose = target.name === 'Aurora' ? "Aurora's range" : 'the practice voice range';
+      const claim = rangeClaim(ctx.rangeSt, target.rangeSt);
+      return {
+        sentence: `Your melody was flat, ${claim} ${whose}.`,
+        delta: Number.isFinite(ctx.rangeSt) ? `${ctx.rangeSt.toFixed(1)} st vs ${target.rangeSt} st` : ''
+      };
+    }
+    case 'quiet':
+      return {
+        sentence: `${name} was quiet.`,
+        delta: Number.isFinite(word.rms) ? `level ${word.rms.toFixed(3)}` : ''
+      };
+    case 'fast':
+      if (Number.isFinite(ctx.paceMs)) {
+        return {
+          sentence: `Pace was fast, about ${Math.round(ctx.paceMs)} milliseconds a syllable.`,
+          delta: `${Math.round(ctx.paceMs)} ms per syllable`
+        };
+      }
+      return { sentence: `${name} went fast.`, delta: '' };
+    case 'misread':
+      return { sentence: `I heard a different word than ${name}.`, delta: 'different word' };
+    default:
+      return { sentence: '', delta: '' };
+  }
+}
+
+function joinSpoken(observationText, technique) {
+  const parts = [observationText, technique].map(part => String(part || '').trim()).filter(Boolean);
+  return parts.map(part => /[.!?]$/.test(part) ? part : `${part}.`).join(' ').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 export function composeFeedback({ words = [], tooNoisy = false, previous = null, cursor = 0, cleared = [], voice = COACH_VOICE, lastLine = '' } = {}) {
   if (tooNoisy) {
-    return { text: cueLine('noisy', cursor, voice), issue: 'noisy', word: '', cursor: cursor + 1, spoken: false };
+    return { text: cueLine('noisy', cursor, voice), issue: 'noisy', word: '', cursor: cursor + 1, spoken: false, detail: '', delta: '' };
   }
-  const groups = new Map();
-  for (const word of words) {
-    if (word.heard === false) continue;
-    const issues = spokenIssues(word);
-    if (!issues.length) continue;
-    const issue = issues[0];
-    if (!groups.has(issue)) groups.set(issue, []);
-    groups.get(issue).push(word);
-  }
-  if (!groups.size) {
+  const { best, ctx } = mainIssue(words, voice);
+  if (!best) {
     const improved = cleared.find(item => item.word && item.heard !== false);
     if (improved) {
-      return { text: fillWord(IMPROVED(cursor), improved.word), issue: 'held', word: improved.word, cursor: cursor + 1, spoken: false };
+      return { text: fillWord(IMPROVED(cursor), improved.word), issue: 'held', word: improved.word, cursor: cursor + 1, spoken: false, detail: '', delta: '' };
     }
-    return { text: '', issue: 'held', word: '', cursor: cursor + 1, spoken: false };
+    return { text: '', issue: 'held', word: '', cursor: cursor + 1, spoken: false, detail: '', delta: '' };
   }
-  const issue = SPEAK_ORDER.find(item => groups.has(item));
-  const group = groups.get(issue);
-  const sentence = feedbackLine(issue, group[0].text, cursor, lastLine);
+  const seen = observation(best.issue, best.word, ctx);
+  const technique = techniqueLine(best.issue, best.word.text, cursor, lastLine);
+  const text = joinSpoken(seen.sentence, technique);
+  const sameIssue = words.filter(word => word.heard !== false && spokenIssues(word).includes(best.issue));
   return {
-    text: sentence,
-    issue,
-    word: group[0].text,
-    words: group.map(word => word.text),
+    text,
+    detail: seen.sentence,
+    delta: seen.delta,
+    issue: best.issue,
+    word: best.word.text,
+    words: sameIssue.map(word => word.text),
     cursor: cursor + 1,
-    spoken: Boolean(sentence)
+    spoken: Boolean(text)
   };
+}
+
+/** A short add-on for a clean take, only when a measurement actually landed. */
+export function passNote({ words = [], goal = {}, voice = COACH_VOICE } = {}) {
+  const target = voiceTarget(voice);
+  const pitched = words.filter(word => Number.isFinite(word.hz) && (word.voiced == null || word.voiced >= 4));
+  if (pitched.length) {
+    const mid = finiteMedian(pitched.map(word => word.hz));
+    if (Number.isFinite(mid) && Math.abs(mid - target.hz) <= 6) return PASS_NOTES.pitch;
+  }
+  if (target.brightness == null) return '';
+  const bright = words.map(word => word.brightness).filter(Number.isFinite);
+  if (!bright.length) return '';
+  const mid = finiteMedian(bright);
+  const band = Array.isArray(goal.brightness) ? goal.brightness : [-16, -10];
+  if (Number.isFinite(mid) && mid >= band[0] && mid <= band[1] && Math.abs(mid - target.brightness) <= 1.5) return PASS_NOTES.resonance;
+  return '';
 }
 
 function IMPROVED(cursor) {
@@ -609,7 +821,7 @@ export function classifyUtterance({ analysis, prompt, goal, ear, previousWords =
       for (const issue of priorIssues) if (!now.has(issue)) cleared.push({ word: word.text, issue });
     }
   }
-  const feedback = composeFeedback({ words, tooNoisy, previous: previousWords, cursor, cleared, voice, lastLine });
+  const feedback = composeFeedback({ words, tooNoisy, previous: previousWords, cursor, cleared, voice, lastLine, goal });
   const profile = profilePhrase(analysis, tooNoisy ? null : ear);
   const confident = words.flatMap(word => word.flags.filter(flag => flag.speak).map(flag => ({ word: word.text, ...flag })));
   return { tooNoisy, words, feedback, profile, confident, cleared };
@@ -868,7 +1080,22 @@ export function createCoachSession({
     const problems = [...seen.values()]
       .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word))
       .slice(0, HARD_WORD_CAP);
-    return { achieved: achieved.length, attempted: attempted.length, total: lines.length, takes: phraseCount, problems };
+    const notes = [];
+    for (const phrase of attempted) {
+      if (!phrase.note?.detail) continue;
+      const row = {
+        phrase: plain(phrase.note.phrase, 120),
+        issue: plain(phrase.note.issue, 16),
+        detail: plain(phrase.note.detail, 180)
+      };
+      const delta = plain(phrase.note.delta, 80);
+      if (!row.phrase || !row.detail || !row.issue) continue;
+      if (delta) row.delta = delta;
+      notes.push(row);
+    }
+    const wrap = { achieved: achieved.length, attempted: attempted.length, total: lines.length, takes: phraseCount, problems };
+    if (notes.length) wrap.notes = notes.slice(0, HARD_WORD_CAP);
+    return wrap;
   }
 
   function logEntry(at = clock, { ended = false } = {}) {
@@ -904,7 +1131,8 @@ export function createCoachSession({
           achieved: wrap.achieved,
           attempted: wrap.attempted,
           total: wrap.total,
-          problems: wrap.problems
+          problems: wrap.problems,
+          ...(wrap.notes?.length ? { notes: wrap.notes } : {})
         }
       }
     };
@@ -963,6 +1191,15 @@ export function createCoachSession({
       if (passed) record.achieved = true;
       for (const word of entry.words) {
         for (const issue of word.flags) record.words.push({ text: word.text, issue });
+      }
+      const noteIssue = result.feedback?.issue;
+      if (result.feedback?.spoken && noteIssue && noteIssue !== 'noisy' && noteIssue !== 'held') {
+        record.note = {
+          phrase: plain(prompt() || result.feedback.word || '', 120),
+          issue: plain(noteIssue, 16),
+          detail: plain(result.feedback.detail || result.feedback.text || '', 180),
+          delta: plain(result.feedback.delta || '', 80)
+        };
       }
       remember(entry);
       summary = spokenSummary();

@@ -313,9 +313,93 @@ export function praiseLine(cursor = 0, previous = '') {
 }
 
 export function feedbackLine(issue, word, cursor = 0, previous = '') {
+  return techniqueLine(issue, word, cursor, previous);
+}
+
+// One physical fix for the next try. Baked {word} lines stitch from Aurora
+// fragments. The sentences without a number are the proposed bake: they use
+// the cloud or device voice until June approves clips.
+export const TECHNIQUE_LINES = {
+  drop: [
+    'Lift the end of "{word}".',
+    'End up on {word}.',
+    'Lift the last stressed syllable.'
+  ],
+  low: [
+    'Pitch up on "{word}".',
+    'Higher on "{word}".',
+    'Let the pitch sit up where mine does.'
+  ],
+  high: [
+    'Ease down on "{word}".',
+    'Not so high on "{word}".',
+    'Too high on "{word}".'
+  ],
+  chesty: [
+    'More forward on "{word}".',
+    'Brighter on "{word}".',
+    'Smile a little and keep the tongue forward.'
+  ],
+  dark: [
+    'Smaller on "{word}".',
+    'Brighter on "{word}".',
+    'Smile a little and place it forward.'
+  ],
+  heavy: [
+    'Lighter on "{word}".',
+    'Easy on {word}.',
+    'Start from a light sigh, then the word.'
+  ],
+  fry: [
+    'Keep air through "{word}".',
+    'Clear the end of "{word}".',
+    'Less push and more air on the last word.'
+  ],
+  strain: [
+    'Softer on "{word}".',
+    'Easy on {word}.',
+    'Less push and more air.'
+  ],
+  breath: [
+    'Less air on "{word}".',
+    'Clearer on "{word}".'
+  ],
+  flat: [
+    'More melody on "{word}".',
+    'Shape "{word}".',
+    'Not so flat on "{word}".'
+  ],
+  quiet: [
+    'A little louder on "{word}".',
+    'Louder on "{word}".'
+  ],
+  fast: [
+    'Not so fast on "{word}".',
+    'Slow on {word}.',
+    'Give each word a little more time.'
+  ],
+  misread: [
+    'Try "{word}" again.',
+    'Say "{word}" once more.'
+  ]
+};
+
+// Fixed notes for a clean take. No numbers, so they can be baked later.
+export const PASS_NOTES = {
+  pitch: 'Pitch was right on target.',
+  resonance: 'Resonance was right on target.'
+};
+
+export function techniqueLine(issue, word, cursor = 0, previous = '') {
   const name = String(word || '').replace(/[<>"]/g, '').trim();
-  const lines = (FEEDBACK_LINES[issue] || [])
+  const lines = (TECHNIQUE_LINES[issue] || [])
     .filter(template => name || !template.includes('{word}'))
     .map(template => fillWord(template, name));
-  return chooseSpoken(lines, cursor, previous);
+  if (!lines.length) return '';
+  const start = ((cursor % lines.length) + lines.length) % lines.length;
+  for (let step = 0; step < lines.length; step++) {
+    const line = lines[(start + step) % lines.length];
+    if (!previous || !previous.includes(line)) return line;
+  }
+  return lines[start];
 }

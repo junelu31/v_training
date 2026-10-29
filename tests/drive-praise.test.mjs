@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyUtterance, composeFeedback, createCoachSession, misreadWord } from '../drive-coach.js';
+import { classifyUtterance, composeFeedback, createCoachSession, misreadWord, passNote } from '../drive-coach.js';
 import {
   FEEDBACK_LINES,
   PRAISE_LINES,
@@ -73,7 +73,7 @@ test('praise is a short rotated line, and the baked ones stay on Aurora clips', 
     assert.equal(covered(line), true, line);
   }
   for (const line of ["That's it.", 'Beautiful resonance.']) {
-    assert.equal(covered(line), false, line);
+    assert.equal(covered(line), true, line);
   }
   for (const line of PRAISE_LINES) {
     assert.equal(shouldCueBreath(line, 'Mia is here early.', true), false, line);
@@ -124,7 +124,7 @@ test('a miss names the failed dimension, rotates, and reuses a clip when one exi
     'Try "morning" again.',
     '"morning" did not land.',
     'Say "morning" once more.'
-  ]) assert.equal(covered(line), false, line);
+  ]) assert.equal(covered(line), true, line);
 
   let previous = '';
   for (const issue of Object.keys(FEEDBACK_LINES)) {
@@ -139,7 +139,7 @@ test('a miss names the failed dimension, rotates, and reuses a clip when one exi
     words: [{ text: 'morning', flags: [{ issue: 'chesty', speak: true }] }],
     cursor: 1
   });
-  assert.equal(named.text, 'Brighter on "morning".');
+  assert.equal(named.text, 'Resonance was darker than the target on morning. Brighter on "morning".');
   assert.equal(named.spoken, true);
 });
 
@@ -237,4 +237,77 @@ test('pitch, resonance, pace, level, and a swapped word each get their own line'
   });
   assert.equal(swapped.feedback.issue, 'misread');
   assert.match(swapped.feedback.text, /morning/);
+});
+
+test('a miss names the biggest measured gap and rotates the technique', () => {
+  const low = composeFeedback({
+    words: [
+      { text: 'morning', hz: 150, voiced: 8, flags: [{ issue: 'low', speak: true }] },
+      { text: 'light', fry: 0.4, fryPeak: 0.4, voiced: 8, flags: [{ issue: 'fry', speak: true }] }
+    ],
+    cursor: 0
+  });
+  assert.equal(low.issue, 'low');
+  assert.equal(low.text, 'Your pitch averaged about 150 hertz, Aurora sits near 172. Pitch up on "morning".');
+  assert.equal(low.delta, '150 Hz vs 172 Hz');
+  assert.ok(low.text.split(/\s+/).length <= 28, low.text);
+  const again = composeFeedback({
+    words: [{ text: 'morning', hz: 150, voiced: 8, flags: [{ issue: 'low', speak: true }] }],
+    cursor: 0,
+    lastLine: low.text
+  });
+  assert.notEqual(again.text, low.text);
+  assert.match(again.text, /Higher on "morning"/);
+  const fell = composeFeedback({
+    words: [{ text: 'morning', hz: 160, startHz: 190, endHz: 140, voiced: 8, flags: [{ issue: 'drop', speak: true }] }]
+  });
+  assert.equal(fell.text, 'Your voice fell at the end of morning, from 190 to 140 hertz. Lift the end of "morning".');
+  const dark = composeFeedback({
+    words: [{ text: 'morning', brightness: -18, voiced: 8, flags: [{ issue: 'dark', speak: true }] }]
+  });
+  assert.equal(dark.text, 'Resonance on morning was about -18 decibels, darker than Aurora near -14. Smaller on "morning".');
+  const flat = composeFeedback({
+    words: [
+      { text: 'one', hz: 160, voiced: 6, flags: [] },
+      { text: 'two', hz: 187, voiced: 6, flags: [{ issue: 'flat', speak: true }] },
+      { text: 'three', hz: 168, voiced: 6, flags: [] }
+    ]
+  });
+  assert.equal(flat.issue, 'flat');
+  assert.match(flat.text, /about a third of Aurora's range/);
+  assert.match(flat.text, /More melody on "two"/);
+  const plan = planSpeech(low.text, has);
+  assert.ok(plan.some(part => part.text), 'the measured sentence stays on the fallback voice');
+  assert.ok(plan.some(part => part.clip), 'the technique plays from Aurora clips');
+  assert.equal(plan.filter(part => part.text).length, 1);
+});
+
+test('a clean take can add one measured note, and the wrap keeps the delta', () => {
+  const onTarget = passNote({ words: [{ hz: 172, voiced: 8, brightness: -12 }] });
+  assert.equal(onTarget, 'Pitch was right on target.');
+  assert.equal(passNote({ words: [{ hz: 180, voiced: 8, brightness: -12 }] }), '');
+  const bright = passNote({ words: [{ hz: 190, voiced: 8, brightness: -13.6 }], goal });
+  assert.equal(bright, 'Resonance was right on target.');
+  const take = phrase(['morning'], { hz: 140 });
+  const session = createCoachSession({ lines: ['morning'], now: 0 });
+  const judged = classifyUtterance({
+    analysis: take,
+    prompt: 'morning',
+    transcript: 'morning',
+    goal,
+    timings: take.timings
+  });
+  assert.equal(judged.feedback.issue, 'low');
+  assert.match(judged.feedback.text, /140 hertz/);
+  assert.match(judged.feedback.text, /172/);
+  session.noteAnalysis(judged, { transcript: 'morning', at: 1000 });
+  const summary = session.wrapUp();
+  assert.equal(summary.notes.length, 1);
+  assert.equal(summary.notes[0].phrase, 'morning');
+  assert.equal(summary.notes[0].issue, 'low');
+  assert.match(summary.notes[0].detail, /140 hertz/);
+  assert.equal(summary.notes[0].delta, '140 Hz vs 172 Hz');
+  const saved = session.finalEntry(1000);
+  assert.equal(saved.coach.wrap.notes[0].delta, '140 Hz vs 172 Hz');
+  assert.equal(/[<>]/.test(JSON.stringify(saved.coach.wrap.notes)), false);
 });

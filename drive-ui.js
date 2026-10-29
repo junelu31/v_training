@@ -1,5 +1,5 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
-import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
+import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, passNote, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
 import { praiseLine } from './drive-cues.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
@@ -744,9 +744,15 @@ function showWrapUp(summary) {
   if (problems) {
     const rows = summary?.problems || [];
     problems.hidden = false;
-    problems.textContent = rows.length
-      ? ['Words that were hard', ...rows.map(row => `${row.word} — ${row.phonetics}${row.count > 1 ? ` · ${row.count} tries` : ''}`)].join('\n')
-      : 'No word was flagged as hard.';
+    const notes = summary?.notes || [];
+    const lines = [rows.length ? 'Words that were hard' : 'No word was flagged as hard.'];
+    for (const row of rows) lines.push(`${row.word} — ${row.phonetics}${row.count > 1 ? ` · ${row.count} tries` : ''}`);
+    if (notes.length) {
+      lines.push('');
+      lines.push('Measured on the takes');
+      for (const note of notes) lines.push(`${note.phrase}: ${note.detail}${note.delta ? ` (${note.delta})` : ''}`);
+    }
+    problems.textContent = lines.join('\n');
   }
   const progress = el('coachProgress');
   if (progress) progress.textContent = '';
@@ -955,9 +961,11 @@ export function planCoachTurn({
     ? (next ? followUpLine({ prompt: next, coached: false, tooNoisy: false, next, voice }) : '')
     : followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next: '', voice });
   const praise = passed ? praiseLine(after.cursor, lastPraise) : '';
+  const note = passed ? passNote({ words: judged.words || [], goal, voice }) : '';
   return {
     type: 'practice',
     praise,
+    passNote: note,
     feedbackText,
     extra,
     follow,
@@ -967,7 +975,7 @@ export function planCoachTurn({
     statusHeld: /\btoo noisy\b/i.test(judged.feedback?.text || ''),
     checkpoint: noted.events.some(event => event.type === 'feedback'),
     showLine: coachSession.prompt() || 'Free talk whenever you are ready.',
-    showSub: feedbackText || praise || '',
+    showSub: feedbackText || [praise, note].filter(Boolean).join(' '),
     noted
   };
 }
@@ -1016,7 +1024,7 @@ async function judgeTurn(turn) {
   lastFeedback = plan.showSub || '';
   if (plan.praise) {
     lastPraiseLine = plan.praise;
-    await say(plan.praise);
+    await say(plan.passNote ? `${plan.praise} ${plan.passNote}` : plan.praise);
   }
   if (plan.feedbackText) {
     lastCoachLine = plan.feedbackText;

@@ -60,7 +60,7 @@ test('the practice voice has its own physical cues', () => {
     cursor: 0,
     voice: PRACTICE_VOICE
   });
-  assert.equal(line.text, 'June went heavy.');
+  assert.equal(line.text, 'June went heavy. Lighter on "June".');
   assert.equal(line.spoken, true);
   assert.match(PRACTICE_CUE_LIBRARY.heavy.variants[0], /thin sigh/);
   assert.equal(sessionLine('pitch-low', PRACTICE_VOICE), PRACTICE_SESSION_LINES['pitch-low']);
@@ -219,19 +219,19 @@ test('the same issue names the first heard word, and the next take says somethin
   const line = composeFeedback({ words, cursor: 0 });
   assert.equal(line.issue, 'drop');
   assert.equal(line.spoken, true);
-  assert.equal(line.text, 'June dropped.');
+  assert.equal(line.text, 'Your voice fell at the end of June. Lift the end of "June".');
   assert.equal(line.text.includes('please'), false);
   assert.equal(line.text.includes('ready'), false);
   assert.equal(line.text.includes('window'), false);
   assert.equal(joinIssueWords(['June', 'please']), 'June and please');
   const again = composeFeedback({ words, cursor: 0, lastLine: line.text });
   assert.notEqual(again.text, line.text);
-  assert.match(again.text, /June|end/i);
+  assert.match(again.text, /June|end|syllable/i);
   const three = composeFeedback({
     words: ['arriving', 'ready', 'morning'].map(text => ({ text, flags: [{ issue: 'fry', speak: true }] })),
     cursor: 0
   });
-  assert.equal(three.text, 'arriving fell into fry.');
+  assert.equal(three.text, 'Fry on arriving. Keep air through "arriving".');
   assert.equal(three.text.includes('ready'), false);
   assert.equal(three.text.includes('morning'), false);
 });
