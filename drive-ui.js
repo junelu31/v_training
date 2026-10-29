@@ -1,5 +1,6 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
 import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
+import { praiseLine } from './drive-cues.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, voiceKey, writeDriveVoice } from './drive-voice.js';
@@ -22,6 +23,8 @@ let stream = null;
 let savedDeps = null;
 let fileTest = false;
 let lastFeedback = '';
+let lastPraiseLine = '';
+let lastCoachLine = '';
 let statusHeld = false;
 let guideRetired = false;
 let clock = null;
@@ -838,7 +841,9 @@ export function planCoachTurn({
   goal = {},
   at = Date.now(),
   statusHeld: noisyStatusHeld = false,
-  voice = COACH_VOICE
+  voice = COACH_VOICE,
+  lastPraise = '',
+  lastLine = ''
 }) {
   const prompt = coachSession.prompt();
   const requested = matchVoiceRequest(heard, { prompt });
@@ -864,7 +869,8 @@ export function planCoachTurn({
     goal,
     ear,
     cursor: coachSession.status().cursor,
-    voice
+    voice,
+    lastLine
   });
   const localText = spokenLine(turn, judged, voice);
   const command = matchCommand(heard, { paused: coachSession.status().paused, prompt });
@@ -948,8 +954,10 @@ export function planCoachTurn({
   const follow = moveOn
     ? (next ? followUpLine({ prompt: next, coached: false, tooNoisy: false, next, voice }) : '')
     : followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next: '', voice });
+  const praise = passed ? praiseLine(after.cursor, lastPraise) : '';
   return {
     type: 'practice',
+    praise,
     feedbackText,
     extra,
     follow,
@@ -959,7 +967,7 @@ export function planCoachTurn({
     statusHeld: /\btoo noisy\b/i.test(judged.feedback?.text || ''),
     checkpoint: noted.events.some(event => event.type === 'feedback'),
     showLine: coachSession.prompt() || 'Free talk whenever you are ready.',
-    showSub: judged.feedback?.text || '',
+    showSub: feedbackText || praise || '',
     noted
   };
 }
@@ -979,7 +987,9 @@ async function judgeTurn(turn) {
     goal: savedDeps.getGoal(),
     at: clock ? clock() : Date.now(),
     statusHeld,
-    voice: driveVoiceId
+    voice: driveVoiceId,
+    lastPraise: lastPraiseLine,
+    lastLine: lastCoachLine
   });
   if (plan.type === 'voice') {
     selectDriveVoice(plan.voice, { announce: false });
@@ -1004,7 +1014,12 @@ async function judgeTurn(turn) {
   if (plan.type === 'ignored') return;
   statusHeld = plan.statusHeld;
   lastFeedback = plan.showSub || '';
+  if (plan.praise) {
+    lastPraiseLine = plan.praise;
+    await say(plan.praise);
+  }
   if (plan.feedbackText) {
+    lastCoachLine = plan.feedbackText;
     show(plan.feedbackText, prompt || '');
     await speak(plan.feedbackText);
   }
