@@ -1,15 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { classifyUtterance, composeFeedback, createCoachSession, misreadWord, passNote } from '../drive-coach.js';
 import {
   FEEDBACK_LINES,
+  PASS_NOTES,
   PRAISE_LINES,
+  TECHNIQUE_LINES,
   feedbackLine,
   praiseLine
 } from '../drive-cues.js';
 import { shouldCueBreath } from '../drive-breath.js';
-import { planSpeech, voiceKey } from '../drive-voice.js';
+import { clipFile, planSpeech, voiceKey } from '../drive-voice.js';
 import { VOICE_CLIPS } from '../drive-voice-clips.js';
 import { planCoachTurn } from '../drive-ui.js';
 
@@ -310,4 +312,26 @@ test('a clean take can add one measured note, and the wrap keeps the delta', () 
   const saved = session.finalEntry(1000);
   assert.equal(saved.coach.wrap.notes[0].delta, '140 Hz vs 172 Hz');
   assert.equal(/[<>]/.test(JSON.stringify(saved.coach.wrap.notes)), false);
+});
+
+test('the ten numberless tips play as Aurora clips, not the fallback', () => {
+  const tips = [
+    ...Object.values(TECHNIQUE_LINES).flat().filter(line => !line.includes('{word}')),
+    ...Object.values(PASS_NOTES)
+  ];
+  assert.equal(tips.length, 10);
+  for (const line of tips) {
+    assert.deepEqual(planSpeech(line, has), [{ clip: line }], line);
+    const file = VOICE_CLIPS[voiceKey(line)];
+    assert.equal(file, clipFile(line), line);
+    assert.ok(existsSync(new URL(`../public/${file}`, import.meta.url)), file);
+  }
+  const pressed = planSpeech('The tone was pressed on morning. Less push and more air.', has);
+  assert.deepEqual(pressed, [
+    { text: 'The tone was pressed on morning.' },
+    { clip: 'Less push and more air.' }
+  ]);
+  const noted = planSpeech('Nice. Pitch was right on target.', has);
+  assert.deepEqual(noted.at(-1), { clip: 'Pitch was right on target.' });
+  assert.ok(noted.slice(0, -1).every(part => part.clip), JSON.stringify(noted));
 });

@@ -168,5 +168,6 @@ test('the practice voice has its own clips for cues, leads, and the same phrase 
   }
   const total = Object.values(PRACTICE_CLIPS).reduce((sum, file) => sum + statSync(new URL(`../public/${file}`, import.meta.url)).size, 0);
   assert.ok(total < 16 * 1024 * 1024, `practice clips total ${total} bytes`);
-  assert.ok(Object.keys(PRACTICE_CLIPS).length >= Object.keys(VOICE_CLIPS).length - 30);
+  // Praise, the numberless technique tips, and the pass notes are Aurora-only.
+  assert.ok(Object.keys(PRACTICE_CLIPS).length >= Object.keys(VOICE_CLIPS).length - 40);
 });

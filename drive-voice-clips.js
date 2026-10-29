@@ -652,7 +652,17 @@ export const VOICE_CLIPS = {
   "~again": "voice/87529e43.mp3",
   "~did not land": "voice/6454e0d8.mp3",
   "~say": "voice/7d5de084.mp3",
-  "~once more": "voice/fd4c05e9.mp3"
+  "~once more": "voice/fd4c05e9.mp3",
+  "lift the last stressed syllable.": "voice/32ff7038.mp3",
+  "let the pitch sit up where mine does.": "voice/cbfa8ae3.mp3",
+  "smile a little and keep the tongue forward.": "voice/230b3d40.mp3",
+  "smile a little and place it forward.": "voice/9bfbcb80.mp3",
+  "start from a light sigh, then the word.": "voice/841c193f.mp3",
+  "less push and more air on the last word.": "voice/6feb4cfe.mp3",
+  "less push and more air.": "voice/855211ec.mp3",
+  "give each word a little more time.": "voice/557dc640.mp3",
+  "pitch was right on target.": "voice/384b4806.mp3",
+  "resonance was right on target.": "voice/0fac3fe4.mp3"
 };
 export const PRACTICE_CLIPS = {
   "hum the next word up in the lighter part of your voice, and keep it where i say it.": "voice/af_bella/66551211.mp3",

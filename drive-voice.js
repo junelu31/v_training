@@ -1,4 +1,4 @@
-import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, FEEDBACK_LINES, PRAISE_LINES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
+import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, FEEDBACK_LINES, PRAISE_LINES, TECHNIQUE_LINES, PASS_NOTES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
 import { PRACTICE_SESSION_LINES, SESSION_LINES } from './drive-session.js';
 
 // Spoken lines for Drive coach. Every fixed line has a pre-rendered clip.
@@ -160,9 +160,14 @@ export function fixedVoiceLines(phrases = [], voice = COACH_VOICE) {
   const cues = Object.values(practice ? PRACTICE_CUE_LIBRARY : CUE_LIBRARY).flatMap(entry => entry.variants);
   const leads = practice ? PRACTICE_LEAD_LINES : LEAD_LINES;
   const session = Object.values(practice ? PRACTICE_SESSION_LINES : SESSION_LINES);
-  // Praise is Aurora's. The practice voice has no bake for these short lines.
+  // Praise, the numberless technique tips, and the pass notes are Aurora's.
+  // The practice voice has no bake for these lines.
   const praise = practice ? [] : PRAISE_LINES;
-  const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases, ...praise];
+  const tips = practice ? [] : [
+    ...Object.values(TECHNIQUE_LINES).flat().filter(line => !line.includes('{word}')),
+    ...Object.values(PASS_NOTES)
+  ];
+  const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases, ...praise, ...tips];
   const seen = new Map();
   for (const line of all) if (line && !seen.has(voiceKey(line))) seen.set(voiceKey(line), line.trim());
   return [...seen.values()];

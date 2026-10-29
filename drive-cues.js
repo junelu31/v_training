@@ -317,8 +317,7 @@ export function feedbackLine(issue, word, cursor = 0, previous = '') {
 }
 
 // One physical fix for the next try. Baked {word} lines stitch from Aurora
-// fragments. The sentences without a number are the proposed bake: they use
-// the cloud or device voice until June approves clips.
+// fragments. The numberless sentences are whole Aurora clips.
 export const TECHNIQUE_LINES = {
   drop: [
     'Lift the end of "{word}".',
@@ -384,7 +383,7 @@ export const TECHNIQUE_LINES = {
   ]
 };
 
-// Fixed notes for a clean take. No numbers, so they can be baked later.
+// Fixed notes for a clean take. No numbers, so they are whole Aurora clips.
 export const PASS_NOTES = {
   pitch: 'Pitch was right on target.',
   resonance: 'Resonance was right on target.'
