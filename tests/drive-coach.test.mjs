@@ -60,8 +60,9 @@ test('the practice voice has its own physical cues', () => {
     cursor: 0,
     voice: PRACTICE_VOICE
   });
-  assert.equal(line.text, `June went heavy. ${cueLine('heavy', 0, PRACTICE_VOICE)}`);
-  assert.match(line.text, /thin sigh/);
+  assert.equal(line.text, 'June went heavy.');
+  assert.equal(line.spoken, true);
+  assert.match(PRACTICE_CUE_LIBRARY.heavy.variants[0], /thin sigh/);
   assert.equal(sessionLine('pitch-low', PRACTICE_VOICE), PRACTICE_SESSION_LINES['pitch-low']);
   assert.notEqual(sessionLine('pitch-low', PRACTICE_VOICE), sessionLine('pitch-low'));
   const memory = { store: {}, getItem(key) { return this.store[key]; }, setItem(key, value) { this.store[key] = value; } };
@@ -208,7 +209,7 @@ test('positive reinforcement changes after the same word improves', () => {
   assert.match(line.text, /closer to how I say it|moved toward my voice|held/i);
 });
 
-test('the same issue names every heard word, then one cue', () => {
+test('the same issue names the first heard word, and the next take says something else', () => {
   const words = [
     { text: 'June', flags: [{ issue: 'drop', speak: true }, { issue: 'chesty', speak: true }] },
     { text: 'please', flags: [{ issue: 'drop', speak: true }] },
@@ -218,19 +219,21 @@ test('the same issue names every heard word, then one cue', () => {
   const line = composeFeedback({ words, cursor: 0 });
   assert.equal(line.issue, 'drop');
   assert.equal(line.spoken, true);
-  assert.equal(line.text.startsWith('June and please dropped. '), true);
+  assert.equal(line.text, 'June dropped.');
+  assert.equal(line.text.includes('please'), false);
   assert.equal(line.text.includes('ready'), false);
   assert.equal(line.text.includes('window'), false);
-  assert.equal(line.text.includes('heavy'), false);
-  const sentences = line.text.split(/[.!?]/).map(part => part.trim()).filter(Boolean);
-  assert.equal(sentences.length, 2);
-  assert.equal(sentences[1], cueLine('drop', 0).replace(/[.!?]$/, ''));
+  assert.equal(joinIssueWords(['June', 'please']), 'June and please');
+  const again = composeFeedback({ words, cursor: 0, lastLine: line.text });
+  assert.notEqual(again.text, line.text);
+  assert.match(again.text, /June|end/i);
   const three = composeFeedback({
     words: ['arriving', 'ready', 'morning'].map(text => ({ text, flags: [{ issue: 'fry', speak: true }] })),
-    cursor: 2
+    cursor: 0
   });
-  assert.equal(three.text.startsWith(`${joinIssueWords(['arriving', 'ready', 'morning'])} fell into fry. `), true);
-  assert.equal(three.text.split(/[.!?]/).filter(part => part.trim()).length, 2);
+  assert.equal(three.text, 'arriving fell into fry.');
+  assert.equal(three.text.includes('ready'), false);
+  assert.equal(three.text.includes('morning'), false);
 });
 
 test('a short take does not name prompt words that were not said', () => {

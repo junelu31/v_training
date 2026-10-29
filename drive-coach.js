@@ -1,5 +1,5 @@
 import { median } from './drive-dsp.js';
-import { CUE_LIBRARY, cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES } from './drive-cues.js';
+import { CUE_LIBRARY, cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES, SPEAK_ORDER, feedbackLine } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
 import { COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
 
@@ -77,9 +77,17 @@ export function orderPracticePhrases(phrases) {
     .map(item => item.phrase);
 }
 
+const EXTRA_PHONETICS = {
+  high: 'Pitch sitting high',
+  flat: 'Flat intonation',
+  quiet: 'Too quiet',
+  fast: 'Too fast',
+  misread: 'Word did not match'
+};
+
 /** Acoustic name already used by the coach, plus the short problem line. Not a new phonetic model. */
 export function wordPhonetics(issue) {
-  const name = CUE_LIBRARY[issue]?.name || '';
+  const name = CUE_LIBRARY[issue]?.name || EXTRA_PHONETICS[issue] || '';
   const how = problemPhrase(issue ? [issue] : []);
   if (name && how) return `${name}: ${how}`;
   return name || how || '';
@@ -240,7 +248,7 @@ export function measureWords(analysis, prompt, goal = {}, timings = null) {
   const phraseVtl = finiteMedian(measured.map(word => word.vtl));
   const phraseCentroid = finiteMedian(measured.map(word => word.centroid));
   const brightnessFloor = Array.isArray(goal.brightness) ? goal.brightness[0] : -10;
-  return measured.map((word, index) => {
+  return notePhraseFlags(measured.map((word, index) => {
     const flags = [];
     const enough = word.voiced >= 1;
     const smoothFall = Number.isFinite(word.startHz) && Number.isFinite(word.endHz)
@@ -294,8 +302,38 @@ export function measureWords(analysis, prompt, goal = {}, timings = null) {
       const heavy = flags.find(flag => flag.issue === 'heavy');
       if (heavy) heavy.confidence = Math.max(heavy.confidence, 0.7);
     }
+    const pitchTop = Array.isArray(goal.pitch) && Number.isFinite(goal.pitch[1]) ? goal.pitch[1] : 210;
+    if (enough && word.voiced >= 4 && Number.isFinite(word.hz) && word.hz > pitchTop + 30) {
+      addFlag(flags, 'high', 0.7, `pitch ${Math.round(word.hz)} Hz`);
+    }
     return { ...word, flags };
-  });
+  }));
+}
+
+function notePhraseFlags(words) {
+  const pitched = words.filter(word => Number.isFinite(word.hz) && word.voiced >= 4);
+  if (pitched.length >= 3) {
+    const mid = finiteMedian(pitched.map(word => word.hz));
+    const spread = finiteMedian(pitched.map(word => Math.abs(word.hz - mid)));
+    if (Number.isFinite(spread) && spread < 6) {
+      const target = pitched[Math.floor(pitched.length / 2)];
+      addFlag(target.flags, 'flat', 0.7, `pitch stayed near ${Math.round(mid)} Hz`);
+    }
+  }
+  const levels = words.map(word => word.rms).filter(value => Number.isFinite(value) && value > 0);
+  const level = finiteMedian(levels);
+  if (Number.isFinite(level) && level < 0.02 && words.some(word => word.voiced >= 4)) {
+    const target = words.find(word => word.voiced >= 4) || words[0];
+    addFlag(target.flags, 'quiet', 0.7, `level ${level.toFixed(3)}`);
+  }
+  const syllables = words.reduce((sum, word) => sum + estimateSyllables(word.text), 0);
+  const voiced = words.reduce((sum, word) => sum + (word.voiced || 0), 0);
+  const perSyllable = syllables ? (voiced * FRAME_HOP_SEC) / syllables : Infinity;
+  if (words.length && perSyllable < 0.11) {
+    const fastest = [...words].sort((a, b) => (a.voiced || 0) - (b.voiced || 0))[0];
+    addFlag(fastest.flags, 'fast', 0.7, `${Math.round(perSyllable * 1000)} ms per syllable`);
+  }
+  return words;
 }
 
 export function applyEar(words, ear, { tooNoisy = false } = {}) {
@@ -328,7 +366,23 @@ export function applyEar(words, ear, { tooNoisy = false } = {}) {
 }
 
 function spokenIssues(word) {
-  return ISSUE_ORDER.filter(issue => word.flags.some(flag => flag.issue === issue && flag.speak));
+  return SPEAK_ORDER.filter(issue => word.flags.some(flag => flag.issue === issue && flag.speak));
+}
+
+/** A prompt word swapped for a different one. A short prefix is not a misread. */
+export function misreadWord(prompt, transcript) {
+  const expected = tokenizePrompt(prompt);
+  const said = tokenizePrompt(transcript);
+  if (!expected.length || !said.length) return '';
+  const saidSet = new Set(said.map(word => word.toLowerCase()));
+  const expectedSet = new Set(expected.map(word => word.toLowerCase()));
+  if (!expected.some(word => saidSet.has(word.toLowerCase()))) return '';
+  const prefix = said.every((word, index) => expected[index]?.toLowerCase() === word.toLowerCase());
+  if (prefix) return '';
+  const missing = expected.filter(word => !saidSet.has(word.toLowerCase()));
+  const extra = said.filter(word => !expectedSet.has(word.toLowerCase()));
+  if (!missing.length || !extra.length) return '';
+  return missing[0];
 }
 
 /** "June and please", or "June, ready, and please". */
@@ -339,7 +393,7 @@ export function joinIssueWords(texts) {
   return `${words.slice(0, -1).join(', ')}, and ${words[words.length - 1]}`;
 }
 
-export function composeFeedback({ words = [], tooNoisy = false, previous = null, cursor = 0, cleared = [], voice = COACH_VOICE } = {}) {
+export function composeFeedback({ words = [], tooNoisy = false, previous = null, cursor = 0, cleared = [], voice = COACH_VOICE, lastLine = '' } = {}) {
   if (tooNoisy) {
     return { text: cueLine('noisy', cursor, voice), issue: 'noisy', word: '', cursor: cursor + 1, spoken: false };
   }
@@ -359,17 +413,16 @@ export function composeFeedback({ words = [], tooNoisy = false, previous = null,
     }
     return { text: '', issue: 'held', word: '', cursor: cursor + 1, spoken: false };
   }
-  const issue = ISSUE_ORDER.find(item => groups.has(item));
+  const issue = SPEAK_ORDER.find(item => groups.has(item));
   const group = groups.get(issue);
-  const names = joinIssueWords(group.map(word => word.text));
-  const sentence = `${names} ${problemPhrase([issue])}. ${cueLine(issue, cursor, voice)}`;
+  const sentence = feedbackLine(issue, group[0].text, cursor, lastLine);
   return {
     text: sentence,
     issue,
     word: group[0].text,
     words: group.map(word => word.text),
     cursor: cursor + 1,
-    spoken: true
+    spoken: Boolean(sentence)
   };
 }
 
@@ -523,7 +576,7 @@ export function expectedVoicedMs(prompt) {
   return Math.min(9000, count * 170 + 120);
 }
 
-export function classifyUtterance({ analysis, prompt, goal, ear, previousWords = [], cursor = 0, timings = null, transcript = '', voice = COACH_VOICE } = {}) {
+export function classifyUtterance({ analysis, prompt, goal, ear, previousWords = [], cursor = 0, timings = null, transcript = '', voice = COACH_VOICE, lastLine = '' } = {}) {
   const tooNoisy = analysis && Object.prototype.hasOwnProperty.call(analysis, 'tooNoisy')
     ? !!analysis.tooNoisy
     : !!((Number.isFinite(analysis?.snrDb) && analysis.snrDb < 11) || analysis?.voicedFraction < 0.12);
@@ -535,6 +588,16 @@ export function classifyUtterance({ analysis, prompt, goal, ear, previousWords =
     words = words.filter(word => word.voiced >= 2 && Number.isFinite(word.end) && Number.isFinite(word.start) && word.end - word.start >= 0.09);
   }
   words = applyEar(words, ear, { tooNoisy });
+  const missed = tooNoisy ? '' : misreadWord(prompt, transcript);
+  if (missed) {
+    const existing = words.find(word => String(word.text || '').toLowerCase() === missed.toLowerCase());
+    const flag = { issue: 'misread', confidence: 0.8, evidence: 'heard a different word', speak: true };
+    if (existing) {
+      if (!existing.flags.some(item => item.issue === 'misread')) existing.flags.push(flag);
+    } else {
+      words = words.concat([{ text: missed, flags: [flag], heard: true }]);
+    }
+  }
   if (tooNoisy) words = words.map(word => ({ ...word, flags: word.flags.map(flag => ({ ...flag, speak: false })) }));
   const cleared = [];
   if (previousWords.length) {
@@ -546,7 +609,7 @@ export function classifyUtterance({ analysis, prompt, goal, ear, previousWords =
       for (const issue of priorIssues) if (!now.has(issue)) cleared.push({ word: word.text, issue });
     }
   }
-  const feedback = composeFeedback({ words, tooNoisy, previous: previousWords, cursor, cleared, voice });
+  const feedback = composeFeedback({ words, tooNoisy, previous: previousWords, cursor, cleared, voice, lastLine });
   const profile = profilePhrase(analysis, tooNoisy ? null : ear);
   const confident = words.flatMap(word => word.flags.filter(flag => flag.speak).map(flag => ({ word: word.text, ...flag })));
   return { tooNoisy, words, feedback, profile, confident, cleared };

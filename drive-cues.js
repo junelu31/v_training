@@ -200,3 +200,122 @@ export function problemPhrase(issues) {
   }
   return ordered.map(issue => PROBLEM[issue]).join(' and ');
 }
+
+// Short praise after a clean take, before the breath and the next phrase.
+// One to four words. Lines already in the Aurora bank play as clips. The
+// others use the cloud or device voice until June bakes them.
+export const PRAISE_LINES = [
+  'Nice.',
+  'Good.',
+  'Nice one.',
+  'Good one.',
+  'That is nice.',
+  'That is good.',
+  'Nothing to fix there.',
+  'That held.',
+  'Easy.',
+  'Nice and easy.',
+  "That's it.",
+  'Beautiful resonance.'
+];
+
+// Terse miss lines. {word} is the word that failed. Several variants per
+// dimension, and the picker skips the line just spoken. A template whose
+// words are already fragments plays from the clip bank. Anything else is
+// the cloud or device fallback (needs an Aurora bake).
+export const FEEDBACK_LINES = {
+  drop: [
+    '{word} dropped.',
+    'Keep the end up.',
+    'End up on {word}.',
+    'Lift the end of "{word}".'
+  ],
+  low: [
+    '{word} sat low in pitch.',
+    'Up on {word}.',
+    'Pitch up on "{word}".',
+    'Higher on "{word}".'
+  ],
+  high: [
+    'Ease down on "{word}".',
+    'Not so high on "{word}".',
+    'Too high on "{word}".'
+  ],
+  chesty: [
+    '{word} went chesty.',
+    'Brighter on "{word}".',
+    'More forward on "{word}".'
+  ],
+  dark: [
+    '{word} sounded too big in the throat.',
+    'Brighter on "{word}".',
+    'Smaller on "{word}".'
+  ],
+  heavy: [
+    '{word} went heavy.',
+    'Easy on {word}.',
+    'Lighter on "{word}".'
+  ],
+  fry: [
+    '{word} fell into fry.',
+    'Clear the end of "{word}".',
+    'Keep air through "{word}".'
+  ],
+  strain: [
+    '{word} sounded pressed.',
+    'Easy on {word}.',
+    'Softer on "{word}".'
+  ],
+  breath: [
+    '{word} went breathy.',
+    'Less air on "{word}".',
+    'Clearer on "{word}".'
+  ],
+  flat: [
+    'Shape "{word}".',
+    'More melody on "{word}".',
+    'Not so flat on "{word}".'
+  ],
+  quiet: [
+    'Louder on "{word}".',
+    'A little louder on "{word}".',
+    '{word} was quiet.'
+  ],
+  fast: [
+    'Slow on {word}.',
+    'Not so fast on "{word}".',
+    '{word} went fast.'
+  ],
+  misread: [
+    'Try "{word}" again.',
+    '"{word}" did not land.',
+    'Say "{word}" once more.'
+  ]
+};
+
+// Spoken ahead of the saved issue list. New dimensions stay out of ISSUE_ORDER
+// so the clip manifest and the saved flag allow-list do not have to grow.
+export const SPEAK_ORDER = [...ISSUE_ORDER, 'high', 'flat', 'quiet', 'fast', 'misread'];
+
+export function chooseSpoken(lines, cursor = 0, previous = '') {
+  const list = (lines || []).filter(Boolean);
+  if (!list.length) return '';
+  const start = ((cursor % list.length) + list.length) % list.length;
+  for (let step = 0; step < list.length; step++) {
+    const line = list[(start + step) % list.length];
+    if (line !== previous) return line;
+  }
+  return list[start];
+}
+
+export function praiseLine(cursor = 0, previous = '') {
+  return chooseSpoken(PRAISE_LINES, cursor, previous);
+}
+
+export function feedbackLine(issue, word, cursor = 0, previous = '') {
+  const name = String(word || '').replace(/[<>"]/g, '').trim();
+  const lines = (FEEDBACK_LINES[issue] || [])
+    .filter(template => name || !template.includes('{word}'))
+    .map(template => fillWord(template, name));
+  return chooseSpoken(lines, cursor, previous);
+}
