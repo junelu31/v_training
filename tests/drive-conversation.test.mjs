@@ -115,6 +115,30 @@ test('a noisy conversation take is spoken, and the next question comes by the se
   assert.deepEqual(plan, [{ text: CONVERSATION_NOISY_LINE }]);
 });
 
+test('a paused conversation stays quiet, and the second counted noisy take still moves on', () => {
+  const session = createCoachSession({ practice: 'conversation', now: 1_000, id: 'paused-noise' });
+  const turn = { tooNoisy: true, reason: 'noise', sampleRate: 16000, samples: new Float32Array(0), hopVoicedMs: 800, frames: [] };
+  session.command('pause', 1_500);
+  const paused = planCoachTurn({ session, turn, heard: 'the road is loud', at: 2_000 });
+  assert.equal(paused.type, 'ignored');
+  assert.equal(paused.feedbackText, '');
+  assert.equal(paused.say, '');
+  assert.equal(paused.follow, '');
+  assert.equal(paused.noted.counted, undefined);
+  assert.equal(session.prompt(), CONVERSATION_PROMPTS[0]);
+  assert.equal(session.status().lineAttempts, 0);
+  session.command('resume', 2_500);
+  const first = planCoachTurn({ session, turn, heard: '', at: 3_000 });
+  assert.equal(first.feedbackText, CONVERSATION_NOISY_LINE);
+  assert.equal(first.follow, CONVERSATION_PROMPTS[0]);
+  assert.equal(session.prompt(), CONVERSATION_PROMPTS[0]);
+  const second = planCoachTurn({ session, turn, heard: '', at: 4_000 });
+  assert.equal(second.noted.counted, true);
+  assert.equal(second.feedbackText, CONVERSATION_NOISY_LINE);
+  assert.equal(second.follow, CONVERSATION_PROMPTS[1]);
+  assert.equal(session.prompt(), CONVERSATION_PROMPTS[1]);
+});
+
 test('a conversation answer with no transcript does not file the placeholder word', () => {
   const session = createCoachSession({ practice: 'conversation', now: 1_000, id: 'plain' });
   const flagged = (text, at) => session.noteAnalysis({

@@ -920,11 +920,12 @@ export function planCoachTurn({
   const noted = coachSession.noteAnalysis(judged, { transcript: conversing ? said : (heard || prompt), at });
   if (noted.ignored) {
     const afterIgnored = coachSession.status();
-    // Done talking flushes into this same plan. Conversation still speaks, and
-    // leaves the question once the noisy cap is used, so a road stretch is not silence.
-    if (conversing) {
+    // Done talking flushes into this same plan. A counted noisy retry still speaks,
+    // and leaves the question once the cap is used. A pause ignore has no counted
+    // flag and stays silent, the same as a paused phrase.
+    if (conversing && noted.counted) {
       const attempts = noted.attempts ?? afterIgnored.lineAttempts;
-      const moveOn = Boolean(noted.counted) && attempts >= CONVERSATION_NOISY_CAP;
+      const moveOn = attempts >= CONVERSATION_NOISY_CAP;
       const nextQuestion = moveOn ? coachSession.advance() : coachSession.prompt();
       return {
         type: 'practice',
