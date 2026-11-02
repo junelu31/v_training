@@ -1,5 +1,6 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
 import { classifyUtterance, conversationTimings, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, passNote, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
+import { CONVERSATION_NOISY_CAP, CONVERSATION_NOISY_LINE } from './drive-conversation.js';
 import { praiseLine } from './drive-cues.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
@@ -504,7 +505,7 @@ async function playClip(url, token, breath = false) {
   return await startBuffer(ctx, buffer, token) ? 'played' : 'cut';
 }
 
-async function playDecoded(bytes, token) {
+async function playDecoded(bytes, token, breath = false) {
   const ctx = ensureContext();
   if (!(await whenRunning(ctx, token)) || token !== speechToken) return false;
   let buffer;
@@ -515,6 +516,11 @@ async function playDecoded(bytes, token) {
   if (token !== speechToken) return false;
   try { buffer = scaleBuffer(ctx, buffer, gainForBuffer(buffer)); }
   catch { /* play the cloud clip as decoded */ }
+  // The inhale sits on the already leveled buffer, so the line stays at -23 LUFS.
+  if (breath) {
+    try { buffer = prependBreath(ctx, buffer, { phraseGain: 1 }); }
+    catch { /* the leveled line still plays */ }
+  }
   return startBuffer(ctx, buffer, token);
 }
 
@@ -567,7 +573,7 @@ async function playPart(part, token, bank, breath = false) {
   // A line that names a word or a count is built at runtime. Cloud speech uses a similar voice.
   const bytes = await cloudSpeech(part.text);
   if (token !== speechToken) return false;
-  if (bytes && await playDecoded(bytes.body, token)) return true;
+  if (bytes && await playDecoded(bytes.body, token, breath)) return true;
   if (token !== speechToken) return false;
   return speakDevice(part.text);
 }
@@ -914,6 +920,29 @@ export function planCoachTurn({
   const noted = coachSession.noteAnalysis(judged, { transcript: conversing ? said : (heard || prompt), at });
   if (noted.ignored) {
     const afterIgnored = coachSession.status();
+    // Done talking flushes into this same plan. Conversation still speaks, and
+    // leaves the question once the noisy cap is used, so a road stretch is not silence.
+    if (conversing) {
+      const attempts = noted.attempts ?? afterIgnored.lineAttempts;
+      const moveOn = Boolean(noted.counted) && attempts >= CONVERSATION_NOISY_CAP;
+      const nextQuestion = moveOn ? coachSession.advance() : coachSession.prompt();
+      return {
+        type: 'practice',
+        praise: '',
+        passNote: '',
+        feedbackText: CONVERSATION_NOISY_LINE,
+        extra: [],
+        follow: nextQuestion,
+        finished: false,
+        say: '',
+        heardLine: 'Heard you, but it was too noisy to judge.',
+        statusHeld: true,
+        checkpoint: false,
+        showLine: nextQuestion,
+        showSub: CONVERSATION_NOISY_LINE,
+        noted
+      };
+    }
     const leaveNoisy = noted.counted && shouldLeavePhrase({
       ignored: false,
       passed: false,
@@ -962,23 +991,25 @@ export function planCoachTurn({
   const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
   const passed = !coached && !tooNoisy;
   if (conversing) {
-    const nextQuestion = coachSession.advance();
-    const praise = passed ? praiseLine(coachSession.status().cursor, lastPraise) : '';
-    const note = passed ? passNote({ words: judged.words || [], goal, voice }) : '';
+    const moveOn = !tooNoisy || coachSession.status().lineAttempts >= CONVERSATION_NOISY_CAP;
+    const nextQuestion = moveOn ? coachSession.advance() : coachSession.prompt();
+    const praise = !tooNoisy && passed ? praiseLine(coachSession.status().cursor, lastPraise) : '';
+    const note = !tooNoisy && passed ? passNote({ words: judged.words || [], goal, voice }) : '';
+    const reply = tooNoisy ? CONVERSATION_NOISY_LINE : feedbackText;
     return {
       type: 'practice',
       praise,
       passNote: note,
-      feedbackText,
-      extra,
+      feedbackText: reply,
+      extra: tooNoisy ? [] : extra,
       follow: nextQuestion,
       finished: false,
       say: '',
-      heardLine: coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : 'Heard you. That matched.',
-      statusHeld: /\btoo noisy\b/i.test(judged.feedback?.text || ''),
+      heardLine: tooNoisy ? 'Heard you, but it was too noisy to judge.' : coached ? 'Heard you. One thing to adjust.' : 'Heard you. That matched.',
+      statusHeld: tooNoisy || /\btoo noisy\b/i.test(judged.feedback?.text || ''),
       checkpoint: noted.events.some(event => event.type === 'feedback'),
       showLine: nextQuestion,
-      showSub: feedbackText || [praise, note].filter(Boolean).join(' '),
+      showSub: reply || [praise, note].filter(Boolean).join(' '),
       noted
     };
   }

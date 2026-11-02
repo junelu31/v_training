@@ -1233,7 +1233,9 @@ export function createCoachSession({
       if (result.tooNoisy && phrases.length && phrases[phrases.length - 1].tooNoisy) {
         let attempts = lineAttempts;
         let counted = false;
-        if (mode === 'lines' && !exhausted()) {
+        // Conversation counts the same way as lines, so a noisy road can move on
+        // instead of staying on the question with nothing said.
+        if ((mode === 'lines' || mode === 'conversation') && !exhausted()) {
           const record = currentRecord();
           record.attempts += 1;
           lineAttempts = record.attempts;
@@ -1248,9 +1250,10 @@ export function createCoachSession({
       if (passed) cleanPhrases += 1;
       recomputeCue();
       cursor = result.feedback?.cursor ?? cursor + 1;
+      const heard = String(transcript || '').trim();
       const entry = {
         prompt: prompt(),
-        transcript: transcript || prompt(),
+        transcript: mode === 'conversation' ? heard : (heard || prompt()),
         feedback: result.feedback?.text || '',
         profile: result.profile?.label || 'androgynous',
         tooNoisy: !!result.tooNoisy,
@@ -1263,8 +1266,11 @@ export function createCoachSession({
       record.attempts += 1;
       lineAttempts = record.attempts;
       if (passed) record.achieved = true;
-      for (const word of entry.words) {
-        for (const issue of word.flags) record.words.push({ text: word.text, issue });
+      // No transcript means the slices are only a measuring stand-in ("that"), not words she said.
+      if (!(mode === 'conversation' && !heard)) {
+        for (const word of entry.words) {
+          for (const issue of word.flags) record.words.push({ text: word.text, issue });
+        }
       }
       const noteIssue = result.feedback?.issue;
       if (result.feedback?.spoken && noteIssue && noteIssue !== 'noisy' && noteIssue !== 'held') {

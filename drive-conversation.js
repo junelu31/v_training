@@ -4,6 +4,11 @@
 // the question is spoken by the cloud aurora voice, then device speech.
 // Keep the text free of < and >, because saved progress rejects markup.
 
+// Spoken when the road covers the answer. No baked clip: one cloud Aurora line, then device speech.
+export const CONVERSATION_NOISY_LINE = "I couldn't hear that clearly, let's try another.";
+// A noisy stretch may stay on the question once, then the next question is asked.
+export const CONVERSATION_NOISY_CAP = 2;
+
 export const CONVERSATION_PROMPTS = [
   'What did you have for breakfast?',
   'Tell me about your weekend.',

@@ -1,7 +1,8 @@
 import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, FEEDBACK_LINES, PRAISE_LINES, TECHNIQUE_LINES, PASS_NOTES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
-import { CONVERSATION_PROMPTS } from './drive-conversation.js';
+import { CONVERSATION_NOISY_LINE, CONVERSATION_PROMPTS } from './drive-conversation.js';
 
 const CONVERSATION_KEYS = new Set(CONVERSATION_PROMPTS.map(line => voiceKey(line)));
+const WHOLE_LINE_KEYS = new Set([...CONVERSATION_KEYS, voiceKey(CONVERSATION_NOISY_LINE)]);
 import { PRACTICE_SESSION_LINES, SESSION_LINES } from './drive-session.js';
 
 // Spoken lines for Drive coach. Every fixed line has a pre-rendered clip.
@@ -103,11 +104,11 @@ export function voiceKey(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-/** A question plays as one clip once it is baked. Until then it stays one fallback line, not a collage of phrase words. */
+/** A question, or the noisy retry, plays as one clip once it is baked. Until then it stays one fallback line, not a collage of phrase words. */
 export function speechHasClip(text, hasClip) {
-  const question = CONVERSATION_KEYS.has(voiceKey(text));
+  const whole = WHOLE_LINE_KEYS.has(voiceKey(text));
   return key => {
-    if (question && String(key).startsWith('~')) return false;
+    if (whole && String(key).startsWith('~')) return false;
     return Boolean(hasClip?.(key));
   };
 }
