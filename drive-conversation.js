@@ -1,8 +1,6 @@
-// Everyday questions for Conversation mode. These are not baked yet.
-// scripts/voice-lines.mjs lists them for the coach voice, and clipFile()
-// is the path a later Aurora bake would fill. Until that file exists,
-// the question is spoken by the cloud aurora voice, then device speech.
-// Keep the text free of < and >, because saved progress rejects markup.
+// Everyday questions for Conversation mode. Each one is a baked Aurora clip
+// at clipFile(). A missing file falls back to the cloud aurora voice, then
+// device speech. Keep the text free of < and >, because saved progress rejects markup.
 
 // Spoken when the road covers the answer. No baked clip: one cloud Aurora line, then device speech.
 export const CONVERSATION_NOISY_LINE = "I couldn't hear that clearly, let's try another.";

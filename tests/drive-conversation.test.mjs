@@ -1,9 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { CONVERSATION_NOISY_LINE, CONVERSATION_PROMPTS } from '../drive-conversation.js';
 import { conversationTimings, createCoachSession } from '../drive-coach.js';
 import { clipFile, fixedVoiceLines, planSpeech, speechHasClip, voiceKey, COACH_VOICE, PRACTICE_VOICE } from '../drive-voice.js';
 import { VOICE_CLIPS } from '../drive-voice-clips.js';
+import { CLIP_LEVELS } from '../drive-clip-levels.js';
+import { clipPlaybackGain } from '../drive-clip-gains.js';
+import { shouldCueBreath } from '../drive-breath.js';
 import { planCoachTurn } from '../drive-ui.js';
 import { readDriveWrap } from '../client-logic.js';
 import { TURN, createTurnDetector } from '../drive-dsp.js';
@@ -35,7 +39,7 @@ function frames(count, extra = {}) {
   }));
 }
 
-test('the question bank is ready for a later Aurora bake and speaks as fallback until then', () => {
+test('conversation questions play the baked Aurora clip, and the noisy retry stays on fallback', () => {
   assert.equal(CONVERSATION_PROMPTS.length, 40);
   const keys = new Set();
   const coach = new Set(fixedVoiceLines(['Hello there'], COACH_VOICE).map(voiceKey));
@@ -48,10 +52,17 @@ test('the question bank is ready for a later Aurora bake and speaks as fallback 
     keys.add(key);
     assert.equal(coach.has(key), true, line);
     assert.equal(practice.includes(key), false, line);
-    assert.equal(clipFile(line).startsWith('voice/'), true);
+    const file = clipFile(line);
+    assert.equal(VOICE_CLIPS[key], file, line);
+    assert.equal(existsSync(new URL(`../public/${file}`, import.meta.url)), true, file);
+    assert.ok(CLIP_LEVELS[file], file);
+    assert.ok(clipPlaybackGain(file) > 0 && clipPlaybackGain(file) <= 1, file);
+    assert.equal(shouldCueBreath(line, line, true), true);
     const plan = planSpeech(line, speechHasClip(line, has));
-    assert.deepEqual(plan, [{ text: line }], `${line} should stay on the fallback voice`);
+    assert.deepEqual(plan, [{ clip: line }], line);
   }
+  const noisy = planSpeech(CONVERSATION_NOISY_LINE, speechHasClip(CONVERSATION_NOISY_LINE, has));
+  assert.deepEqual(noisy, [{ text: CONVERSATION_NOISY_LINE }]);
 });
 
 test('a conversation answer is graded like a phrase miss, then the next question is asked', () => {
