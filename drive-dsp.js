@@ -575,10 +575,12 @@ export const TURN = {
   preRollMs: 180
 };
 
-export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
+export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn, maxTurnSec = TURN.maxTurnSec, endSilenceMs = TURN.endSilenceMs } = {}) {
   const filteredRing = new Float32Array(FRAME);
   let ringCount = 0;
-  const utterance = new Float32Array(sampleRate * TURN.maxTurnSec);
+  const capSec = Math.min(30, Math.max(TURN.maxTurnSec, Number.isFinite(maxTurnSec) ? maxTurnSec : TURN.maxTurnSec));
+  const utterance = new Float32Array(Math.floor(sampleRate * capSec));
+  let silenceLimit = Number.isFinite(endSilenceMs) && endSilenceMs >= 400 ? endSilenceMs : TURN.endSilenceMs;
   let uttLen = 0;
   const preRoll = new Float32Array(Math.floor(sampleRate * TURN.preRollMs / 1000));
   let prePos = 0;
@@ -770,7 +772,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
           // glued into the take.
           const pauseLike = rawRms < 0.11;
           const stillOnPhrase = expectMs > 0 && totalVoicedHopMs < expectMs * TURN.phraseDoneRatio;
-          const limit = pauseLike && stillOnPhrase ? TURN.holdSilenceMs : TURN.endSilenceMs;
+          const limit = pauseLike && stillOnPhrase ? TURN.holdSilenceMs : silenceLimit;
           if (quietMs >= limit) finish('silence');
           else if (uttLen >= utterance.length - HOP) finish('max');
         }
@@ -814,7 +816,7 @@ export function createTurnDetector({ sampleRate = SAMPLE_RATE, onTurn } = {}) {
       expectMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
     },
     stats() {
-      return { turns, inSpeech, speaking, utteranceSamples: uttLen, bufferCap: utterance.length };
+      return { turns, inSpeech, speaking, utteranceSamples: uttLen, bufferCap: utterance.length, endSilenceMs: silenceLimit };
     }
   };
 }

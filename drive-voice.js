@@ -1,4 +1,7 @@
 import { CUE_LIBRARY, PRACTICE_CUE_LIBRARY, IMPROVED_LINES, FEEDBACK_LINES, PRAISE_LINES, TECHNIQUE_LINES, PASS_NOTES, ISSUE_ORDER, problemPhrase } from './drive-cues.js';
+import { CONVERSATION_PROMPTS } from './drive-conversation.js';
+
+const CONVERSATION_KEYS = new Set(CONVERSATION_PROMPTS.map(line => voiceKey(line)));
 import { PRACTICE_SESSION_LINES, SESSION_LINES } from './drive-session.js';
 
 // Spoken lines for Drive coach. Every fixed line has a pre-rendered clip.
@@ -100,6 +103,15 @@ export function voiceKey(text) {
   return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/** A question plays as one clip once it is baked. Until then it stays one fallback line, not a collage of phrase words. */
+export function speechHasClip(text, hasClip) {
+  const question = CONVERSATION_KEYS.has(voiceKey(text));
+  return key => {
+    if (question && String(key).startsWith('~')) return false;
+    return Boolean(hasClip?.(key));
+  };
+}
+
 /** Words of a runtime part, without punctuation or quotes, as fragment keys use them. */
 export function fragmentWords(text) {
   return String(text || '').toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^a-z0-9']+/g, ' ')
@@ -167,7 +179,9 @@ export function fixedVoiceLines(phrases = [], voice = COACH_VOICE) {
     ...Object.values(TECHNIQUE_LINES).flat().filter(line => !line.includes('{word}')),
     ...Object.values(PASS_NOTES)
   ];
-  const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases, ...praise, ...tips];
+  // Questions are coach-only until a bake exists. The practice voice does not say them.
+  const questions = practice ? [] : CONVERSATION_PROMPTS;
+  const all = [...session, ...cues, ...COACH_LINES, ...leads, ...phrases, ...praise, ...tips, ...questions];
   const seen = new Map();
   for (const line of all) if (line && !seen.has(voiceKey(line))) seen.set(voiceKey(line), line.trim());
   return [...seen.values()];

@@ -1,9 +1,9 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
-import { classifyUtterance, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, passNote, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
+import { classifyUtterance, conversationTimings, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, passNote, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
 import { praiseLine } from './drive-cues.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
-import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, voiceKey, writeDriveVoice } from './drive-voice.js';
+import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, speechHasClip, voiceKey, writeDriveVoice } from './drive-voice.js';
 import { prependBreath, readBreathCue, shouldCueBreath } from './drive-breath.js';
 import { DEVICE_SPEECH_VOLUME, clipPlaybackGain, gainForBuffer, scaleBuffer } from './drive-clip-gains.js';
 import { PRACTICE_CLIPS, VOICE_CLIPS } from './drive-voice-clips.js';
@@ -15,6 +15,7 @@ let audioContext = null;
 let silentGain = null;
 let detector = null;
 let session = null;
+let practiceMode = 'phrases';
 let speaking = false;
 let activeSource = null;
 let sourceNode = null;
@@ -611,7 +612,7 @@ function speak(text) {
 async function finishSpeech(text, token, bank) {
   const breath = wantsBreath(text);
   try {
-    const has = key => Boolean(clipIn(bank, key));
+    const has = speechHasClip(text, key => Boolean(clipIn(bank, key)));
     const plan = () => planSpeech(text, has);
     let ok = await runPlan(plan(), token, bank, breath);
     // The sheet can stop a source that had already started. Say the whole line once it can run.
@@ -736,9 +737,14 @@ function unbindVisibility() {
 function showWrapUp(summary) {
   const achieved = summary?.achieved || 0;
   const attempted = summary?.attempted || 0;
+  const questions = session?.status?.().mode === 'conversation';
   show(
-    attempted ? `${achieved} of ${attempted} phrases achieved` : 'No phrases yet',
-    'Achieved means the phrase passed: a take with no coaching note, and not too noisy to judge. Attempted means you spoke that phrase at least once.'
+    attempted
+      ? `${achieved} of ${attempted} ${questions ? 'questions on target' : 'phrases achieved'}`
+      : (questions ? 'No questions yet' : 'No phrases yet'),
+    questions
+      ? 'On target means the answer had no coaching note and was not too noisy. Attempted means you answered.'
+      : 'Achieved means the phrase passed: a take with no coaching note, and not too noisy to judge. Attempted means you spoke that phrase at least once.'
   );
   const problems = el('coachProblems');
   if (problems) {
@@ -760,6 +766,8 @@ function showWrapUp(summary) {
   if (commands) commands.hidden = true;
   const switchButton = el('coachVoiceSwitch');
   if (switchButton) switchButton.hidden = true;
+  const done = el('coachDone');
+  if (done) done.hidden = true;
   const guide = el('coachGuide');
   if (guide) guide.hidden = true;
   const end = el('coachEnd');
@@ -852,6 +860,10 @@ export function planCoachTurn({
   lastLine = ''
 }) {
   const prompt = coachSession.prompt();
+  const conversing = coachSession.status().mode === 'conversation';
+  const said = String(heard || '').trim();
+  const timings = conversing && !said ? conversationTimings(turn?.frames || []) : null;
+  const gradePrompt = conversing ? (said || (timings || []).map(word => word.text).join(' ')) : prompt;
   const requested = matchVoiceRequest(heard, { prompt });
   if (requested) {
     return {
@@ -870,8 +882,9 @@ export function planCoachTurn({
   }
   const judged = classifyUtterance({
     analysis: turn,
-    prompt,
-    transcript: heard,
+    prompt: gradePrompt,
+    transcript: conversing ? said : heard,
+    timings,
     goal,
     ear,
     cursor: coachSession.status().cursor,
@@ -898,7 +911,7 @@ export function planCoachTurn({
     };
   }
   if (judged.feedback) judged.feedback = { ...judged.feedback, text: localText, spoken: Boolean(localText) };
-  const noted = coachSession.noteAnalysis(judged, { transcript: heard || prompt, at });
+  const noted = coachSession.noteAnalysis(judged, { transcript: conversing ? said : (heard || prompt), at });
   if (noted.ignored) {
     const afterIgnored = coachSession.status();
     const leaveNoisy = noted.counted && shouldLeavePhrase({
@@ -948,6 +961,27 @@ export function planCoachTurn({
   const coached = Boolean(judged.feedback?.spoken);
   const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
   const passed = !coached && !tooNoisy;
+  if (conversing) {
+    const nextQuestion = coachSession.advance();
+    const praise = passed ? praiseLine(coachSession.status().cursor, lastPraise) : '';
+    const note = passed ? passNote({ words: judged.words || [], goal, voice }) : '';
+    return {
+      type: 'practice',
+      praise,
+      passNote: note,
+      feedbackText,
+      extra,
+      follow: nextQuestion,
+      finished: false,
+      say: '',
+      heardLine: coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : 'Heard you. That matched.',
+      statusHeld: /\btoo noisy\b/i.test(judged.feedback?.text || ''),
+      checkpoint: noted.events.some(event => event.type === 'feedback'),
+      showLine: nextQuestion,
+      showSub: feedbackText || [praise, note].filter(Boolean).join(' '),
+      noted
+    };
+  }
   const after = coachSession.status();
   const moveOn = !noted.ignored && shouldLeavePhrase({
     ignored: false,
@@ -1050,7 +1084,7 @@ async function judgeTurn(turn) {
 
 function pushCaptured(input, ctx) {
   lastFrameAt = Date.now();
-  if (session && detector) detector.setExpectation(expectedVoicedMs(session.prompt()));
+  if (session && detector) detector.setExpectation(session.status().mode === 'conversation' ? 0 : expectedVoicedMs(session.prompt()));
   const copy = new Float32Array(input.length);
   copy.set(input);
   const samples = ctx.sampleRate === SAMPLE_RATE ? copy : resampleLinear(copy, ctx.sampleRate, SAMPLE_RATE);
@@ -1272,6 +1306,57 @@ function paintDriveVoice() {
   }
 }
 
+function paintPracticeMode() {
+  const conversing = practiceMode === 'conversation';
+  const box = el('driveModes');
+  if (box && typeof box.querySelectorAll === 'function') {
+    for (const button of box.querySelectorAll('[data-drive-mode]')) {
+      const on = button.dataset.driveMode === practiceMode;
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  const note = el('driveLengthNote');
+  if (note) {
+    note.textContent = conversing
+      ? 'Conversation asks a short question, then listens for up to about thirty seconds. A two second pause ends the answer. It runs until you tap End practice.'
+      : 'There is no 20, 30, or 40 minute session. Phrases run from easiest to hardest, three tries each, until you tap End practice or finish the bank.';
+  }
+  const startNote = el('driveStartNote');
+  if (startNote) {
+    startNote.textContent = conversing
+      ? 'After you start, she asks a short question. Answer in your own words. A two second pause, or Done talking, ends the answer. End practice stops the session. The screen stays on until you end it. Switching apps pauses the coach until you come back.'
+      : 'After you start, talk through the lines from easiest to hardest. Three tries, then the next phrase. Say next, repeat, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the whole session. The screen stays on until you end it. Switching apps pauses the coach until you come back.';
+  }
+  const lines = el('driveLines');
+  if (lines) lines.hidden = conversing;
+  const done = el('coachDone');
+  if (done && (!session || session.status().stopped)) done.hidden = !conversing;
+}
+
+function finishAnswer() {
+  if (!session || session.status().mode !== 'conversation' || speaking || judging) return;
+  detector?.flush();
+}
+
+function bindPracticeMode() {
+  const box = el('driveModes');
+  if (box && typeof box.querySelectorAll === 'function' && !box.dataset.bound) {
+    for (const button of box.querySelectorAll('[data-drive-mode]')) {
+      button.onclick = () => {
+        if (session && !session.status().stopped) return;
+        practiceMode = button.dataset.driveMode === 'conversation' ? 'conversation' : 'phrases';
+        paintPracticeMode();
+      };
+    }
+    if (box.dataset) box.dataset.bound = '1';
+  }
+  const done = el('coachDone');
+  if (done && !done.dataset?.bound) {
+    done.onclick = () => finishAnswer();
+    if (done.dataset) done.dataset.bound = '1';
+  }
+}
+
 function bindDriveVoiceControls() {
   const box = el('driveVoices');
   if (box && typeof box.querySelectorAll === 'function' && !box.dataset.bound) {
@@ -1324,7 +1409,9 @@ export function mountDriveCoach(deps) {
   el('coachTestRow').hidden = !fileTest;
   loadDriveVoice();
   bindDriveVoiceControls();
+  bindPracticeMode();
   paintDriveVoice();
+  paintPracticeMode();
   const clicked = () => {
     const resumed = Boolean(session && !session.status().stopped);
     ensureSession();
@@ -1405,18 +1492,31 @@ function ensureSession() {
     problems.hidden = true;
     problems.textContent = '';
   }
-  const commands = el('coachCommands');
-  if (commands) commands.hidden = false;
   const switchButton = el('coachVoiceSwitch');
   if (switchButton) switchButton.hidden = false;
+  const conversing = practiceMode === 'conversation';
   session = createCoachSession({
     plannedMinutes: savedDeps.getPlanned(),
     routineId: savedDeps.getRoutine(),
-    lines: savedDeps.getLines(),
-    now: Date.now()
+    lines: conversing ? [] : savedDeps.getLines(),
+    now: Date.now(),
+    practice: conversing ? 'conversation' : 'phrases'
   });
-  detector = createTurnDetector({ sampleRate: SAMPLE_RATE, onTurn });
-  detector.setExpectation(expectedVoicedMs(session.prompt()));
+  detector = createTurnDetector({
+    sampleRate: SAMPLE_RATE,
+    onTurn,
+    ...(conversing ? { maxTurnSec: 28, endSilenceMs: 2000 } : {})
+  });
+  detector.setExpectation(conversing ? 0 : expectedVoicedMs(session.prompt()));
+  const done = el('coachDone');
+  if (done) done.hidden = !conversing;
+  const commands = el('coachCommands');
+  if (commands) {
+    commands.hidden = false;
+    commands.textContent = conversing
+      ? 'Answer in your own words. A two second pause, or Done talking, ends the answer. You can say next, pause, or end practice.'
+      : 'You can say next phrase, say it again, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the session.';
+  }
   lastFeedback = '';
   statusHeld = false;
   guideRetired = false;

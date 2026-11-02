@@ -161,6 +161,15 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.deepEqual(extremeRound.coach.wrap.sound, { hz: 160, db: -14, takes: 1 });
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...sounded, coach: { ...sounded.coach, wrap: { ...sounded.coach.wrap, sound: { hz: 160, db: -80, takes: 1 } } } }] }, version: 11 }, signedIn)).status, 400);
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...sounded, coach: { ...sounded.coach, wrap: { ...sounded.coach.wrap, sound: { hz: 10, db: -14, takes: 1 } } } }] }, version: 11 }, signedIn)).status, 400);
+    const conversation = {
+      ...noted,
+      id: 'coach-talk',
+      coach: { ...noted.coach, mode: 'conversation', summary: 'Two questions.' }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, conversation] }, version: 11 }, signedIn)).status, 200);
+    const talkRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
+    assert.equal(talkRound.coach.mode, 'conversation');
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...conversation, coach: { ...conversation.coach, mode: 'chat' } }] }, version: 12 }, signedIn)).status, 400);
     const marked = {
       ...noted,
       coach: { ...noted.coach, wrap: { ...noted.coach.wrap, notes: [{ phrase: 'morning', issue: 'low', detail: 'bad <b>', delta: '1' }] } }

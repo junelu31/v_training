@@ -208,7 +208,7 @@ function validateCoach(entry) {
   const coach = entry.coach;
   if (!coach || typeof coach !== 'object' || Array.isArray(coach)) throw new HttpError(400, 'Invalid drive log.');
   if (!Number.isFinite(coach.minutes) || coach.minutes < 0 || coach.minutes > 120) throw new HttpError(400, 'Invalid drive log.');
-  if (!['lines', 'free'].includes(coach.mode)) throw new HttpError(400, 'Invalid drive log.');
+  if (!['lines', 'free', 'conversation'].includes(coach.mode)) throw new HttpError(400, 'Invalid drive log.');
   const flag = value => {
     if (value == null) return false;
     if (typeof value !== 'boolean') throw new HttpError(400, 'Invalid drive log.');
