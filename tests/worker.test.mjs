@@ -130,6 +130,18 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, noted] }, version: 8 }, signedIn)).status, 200);
     const notedRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
     assert.deepEqual(notedRound.coach.wrap.notes, noted.coach.wrap.notes);
+    const sounded = {
+      ...noted,
+      id: 'coach-sound',
+      coach: {
+        ...noted.coach,
+        wrap: { ...noted.coach.wrap, sound: { hz: 168.24, db: -14.16, takes: 4 } }
+      }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, sounded] }, version: 9 }, signedIn)).status, 200);
+    const soundRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
+    assert.deepEqual(soundRound.coach.wrap.sound, { hz: 168.2, db: -14.2, takes: 4 });
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...sounded, coach: { ...sounded.coach, wrap: { ...sounded.coach.wrap, sound: { hz: 10, db: -14, takes: 1 } } } }] }, version: 10 }, signedIn)).status, 400);
     const marked = {
       ...noted,
       coach: { ...noted.coach, wrap: { ...noted.coach.wrap, notes: [{ phrase: 'morning', issue: 'low', detail: 'bad <b>', delta: '1' }] } }

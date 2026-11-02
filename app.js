@@ -1,5 +1,5 @@
 import { baselineBlendWeight, baselineRelativeScore, blendOverall, describePitchDelta, spectralBalance, scoreBand, validatedOverall } from './voice-metrics.js';
-import { baselineReferences, dayOf, driveHistoryExtras, escapeHtml, keepDriveLog, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory } from './client-logic.js';
+import { baselineReferences, dayOf, driveHistoryExtras, escapeHtml, keepDriveLog, localDayKey, mergeState, normalizeState, selectDrive, shouldPauseForComfort, stableState, streakFromDayKeys, timedWordsFromCloud, trimHistory, weeklyTrend, weeklyTrendHtml } from './client-logic.js';
 import { phraseDifficulty, orderPracticePhrases } from './drive-coach.js';
 import { mountDriveCoach } from './drive-ui.js';
 import { readBreathCue, writeBreathCue } from './drive-breath.js';
@@ -747,6 +747,8 @@ function renderProgress(){
     const a=item.attempt;return `<div class="history-row"><div><b>${escapeHtml(a.lessonTitle)}</b><br><small>${new Date(a.date).toLocaleString()} · ${escapeHtml(presets[a.goal]?.name||a.goal)}</small><br><button type="button" class="text-button history-play" data-play-attempt="${escapeHtml(a.id)}">Play saved audio</button></div><b>${a.overall}</b><small>${a.scores.pitch} pitch</small><small>${a.scores.brightness} spectral</small><small>${a.comfort?`${a.comfort}/5 comfort`:`${a.scores.movement} move`}</small><small>${a.alignment?`${a.alignment}/5 self`:`${a.scores.ease} control`}</small></div>`;
   }).join(''):'<p class="privacy-line">No saved attempts yet.</p>';
   document.querySelectorAll('[data-play-attempt]').forEach(button=>button.onclick=()=>playSavedAttempt(button.dataset.playAttempt));
+  const trend=el('weeklyTrend');
+  if(trend) trend.innerHTML=weeklyTrendHtml(weeklyTrend({ driveLog: state.driveLog, attempts: state.attempts }));
   drawProgressChart();
 }
 function baselineProgressLabel(){

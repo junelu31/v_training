@@ -157,6 +157,8 @@ function validateWrap(wrap) {
     return { word: row.word, phonetics: row.phonetics, count: tries };
   });
   const saved = { achieved, attempted, total, problems };
+  const sound = validateSound(wrap.sound);
+  if (sound) saved.sound = sound;
   if (wrap.notes == null) return saved;
   if (!Array.isArray(wrap.notes) || wrap.notes.length > NOTE_CAP) throw new HttpError(400, 'Invalid drive log.');
   const clip = (value, max, required) => {
@@ -182,6 +184,24 @@ function validateWrap(wrap) {
     return note;
   });
   return saved;
+}
+
+function validateSound(sound) {
+  if (sound == null) return null;
+  if (typeof sound !== 'object' || Array.isArray(sound)) throw new HttpError(400, 'Invalid drive log.');
+  const count = (value, max) => {
+    if (!Number.isInteger(value) || value < 1 || value > max) throw new HttpError(400, 'Invalid drive log.');
+    return value;
+  };
+  const tenth = (value, min, max) => {
+    if (!Number.isFinite(value) || value < min || value > max) throw new HttpError(400, 'Invalid drive log.');
+    return Math.round(value * 10) / 10;
+  };
+  return {
+    hz: tenth(sound.hz, 50, 500),
+    db: tenth(sound.db, -60, 20),
+    takes: count(sound.takes, 500)
+  };
 }
 
 function validateCoach(entry) {
