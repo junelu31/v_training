@@ -111,3 +111,26 @@ test('a graded take stores average pitch and resonance, and a noisy take does no
   session.noteAnalysis(words(150), { transcript: 'morning', at: at + 2000 });
   assert.deepEqual(session.finalEntry(at + 2000).coach.wrap.sound, { hz: 165, db: -15, takes: 2 });
 });
+
+test('a take outside the saved sound window is left out, and an all-extreme session omits sound', () => {
+  assert.equal(takeSound([{ text: 'morning', hz: 160, brightness: -80, voiced: 8 }]), null);
+  assert.equal(takeSound([{ text: 'morning', hz: 40, brightness: -14, voiced: 8 }]), null);
+  assert.equal(takeSound([{ text: 'morning', hz: 520, resonance: 30, voiced: 8 }]), null);
+  assert.deepEqual(takeSound([{ text: 'morning', hz: 50, brightness: -60, voiced: 8 }]), { hz: 50, db: -60 });
+  assert.deepEqual(takeSound([{ text: 'morning', hz: 500, brightness: 20, voiced: 8 }]), { hz: 500, db: 20 });
+  const at = monday.getTime();
+  const take = (hz, db) => ({
+    tooNoisy: false,
+    words: [{ text: 'morning', hz, brightness: db, voiced: 8, flags: [] }],
+    feedback: { spoken: false, text: '' },
+    profile: { label: 'androgynous' }
+  });
+  const mixed = createCoachSession({ lines: ['morning'], now: at, id: 'window' });
+  mixed.noteAnalysis(take(160, -14), { transcript: 'morning', at });
+  mixed.noteAnalysis(take(160, -80), { transcript: 'morning', at: at + 1000 });
+  mixed.noteAnalysis(take(40, -14), { transcript: 'morning', at: at + 2000 });
+  assert.deepEqual(mixed.finalEntry(at + 2000).coach.wrap.sound, { hz: 160, db: -14, takes: 1 });
+  const extreme = createCoachSession({ lines: ['morning'], now: at, id: 'extreme' });
+  extreme.noteAnalysis(take(160, -80), { transcript: 'morning', at });
+  assert.equal(extreme.finalEntry(at).coach.wrap.sound, undefined);
+});

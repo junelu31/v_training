@@ -107,7 +107,20 @@ function roundTenth(value) {
   return Math.round(value * 10) / 10;
 }
 
-/** Median pitch and brightness for one graded take. Missing either measure returns null. */
+// Same window as Worker validateSound. A tenth outside it rejects the whole progress save.
+const SOUND_HZ_MIN = 50;
+const SOUND_HZ_MAX = 500;
+const SOUND_DB_MIN = -60;
+const SOUND_DB_MAX = 20;
+
+function savedTenth(value, min, max) {
+  if (!Number.isFinite(value) || value < min || value > max) return null;
+  const tenth = roundTenth(value);
+  if (!Number.isFinite(tenth) || tenth < min || tenth > max) return null;
+  return tenth;
+}
+
+/** Median pitch and brightness for one graded take. Missing either measure, or a reading outside the saved window, returns null. */
 export function takeSound(words = []) {
   const hzValues = [];
   const dbValues = [];
@@ -117,10 +130,10 @@ export function takeSound(words = []) {
     const db = Number.isFinite(word.brightness) ? word.brightness : word.resonance;
     if (Number.isFinite(db)) dbValues.push(db);
   }
-  const hz = finiteMedian(hzValues);
-  const db = finiteMedian(dbValues);
-  if (!Number.isFinite(hz) || !Number.isFinite(db)) return null;
-  return { hz: roundTenth(hz), db: roundTenth(db) };
+  const hz = savedTenth(finiteMedian(hzValues), SOUND_HZ_MIN, SOUND_HZ_MAX);
+  const db = savedTenth(finiteMedian(dbValues), SOUND_DB_MIN, SOUND_DB_MAX);
+  if (hz == null || db == null) return null;
+  return { hz, db };
 }
 
 function voicedSpan(frames) {
@@ -1119,11 +1132,9 @@ export function createCoachSession({
     const wrap = { achieved: achieved.length, attempted: attempted.length, total: lines.length, takes: phraseCount, problems };
     if (notes.length) wrap.notes = notes.slice(0, HARD_WORD_CAP);
     if (soundTakes > 0) {
-      wrap.sound = {
-        hz: roundTenth(soundHz / soundTakes),
-        db: roundTenth(soundDb / soundTakes),
-        takes: soundTakes
-      };
+      const hz = savedTenth(soundHz / soundTakes, SOUND_HZ_MIN, SOUND_HZ_MAX);
+      const db = savedTenth(soundDb / soundTakes, SOUND_DB_MIN, SOUND_DB_MAX);
+      if (hz != null && db != null) wrap.sound = { hz, db, takes: soundTakes };
     }
     return wrap;
   }

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { createCoachSession } from '../drive-coach.js';
 
 test('accounts, sessions, persistence, isolation, conflicts, and input protection in Workers', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({
@@ -141,7 +142,25 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, sounded] }, version: 9 }, signedIn)).status, 200);
     const soundRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
     assert.deepEqual(soundRound.coach.wrap.sound, { hz: 168.2, db: -14.2, takes: 4 });
-    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...sounded, coach: { ...sounded.coach, wrap: { ...sounded.coach.wrap, sound: { hz: 10, db: -14, takes: 1 } } } }] }, version: 10 }, signedIn)).status, 400);
+    const extremeAt = Date.parse('2026-10-07T12:00:00Z');
+    const extreme = createCoachSession({ lines: ['morning'], now: extremeAt, id: 'coach-extreme' });
+    const graded = (hz, db) => ({
+      tooNoisy: false,
+      words: [{ text: 'morning', hz, brightness: db, voiced: 8, flags: [] }],
+      feedback: { spoken: false, text: '' },
+      profile: { label: 'androgynous' }
+    });
+    extreme.noteAnalysis(graded(160, -14), { transcript: 'morning', at: extremeAt });
+    extreme.noteAnalysis(graded(160, -80), { transcript: 'morning', at: extremeAt + 1000 });
+    const savedExtreme = extreme.finalEntry(extremeAt + 60000);
+    assert.deepEqual(savedExtreme.coach.wrap.sound, { hz: 160, db: -14, takes: 1 });
+    assert.equal(savedExtreme.coach.wrap.sound.db >= -60 && savedExtreme.coach.wrap.sound.db <= 20, true);
+    const extremeSave = await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, savedExtreme] }, version: 10 }, signedIn);
+    assert.equal(extremeSave.status, 200, await extremeSave.clone().text());
+    const extremeRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
+    assert.deepEqual(extremeRound.coach.wrap.sound, { hz: 160, db: -14, takes: 1 });
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...sounded, coach: { ...sounded.coach, wrap: { ...sounded.coach.wrap, sound: { hz: 160, db: -80, takes: 1 } } } }] }, version: 11 }, signedIn)).status, 400);
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...sounded, coach: { ...sounded.coach, wrap: { ...sounded.coach.wrap, sound: { hz: 10, db: -14, takes: 1 } } } }] }, version: 11 }, signedIn)).status, 400);
     const marked = {
       ...noted,
       coach: { ...noted.coach, wrap: { ...noted.coach.wrap, notes: [{ phrase: 'morning', issue: 'low', detail: 'bad <b>', delta: '1' }] } }
