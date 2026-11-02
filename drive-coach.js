@@ -2,6 +2,7 @@ import { median } from './drive-dsp.js';
 import { CUE_LIBRARY, cueLine, fillWord, problemPhrase, ISSUE_ORDER, IMPROVED_LINES, SPEAK_ORDER, techniqueLine, PASS_NOTES } from './drive-cues.js';
 import { createDriveSession } from './drive-session.js';
 import { COACH_VOICE, PRACTICE_VOICE } from './drive-voice.js';
+import { CONVERSATION_PROMPTS } from './drive-conversation.js';
 
 export { createDriveSession };
 
@@ -149,6 +150,27 @@ function voicedSpan(frames) {
   first = Math.max(0, first - 1);
   last = Math.min(frames.length - 1, last + 1);
   return frames.slice(first, last + 1);
+}
+
+/** Voiced slices for an answer that has no transcript. Each slice is long enough to measure. */
+export function conversationTimings(frames = []) {
+  const list = Array.isArray(frames) ? frames : [];
+  const spans = [];
+  let index = 0;
+  while (index < list.length && spans.length < 16) {
+    while (index < list.length && !(list[index]?.voiced || list[index]?.unstable)) index += 1;
+    if (index >= list.length) break;
+    const start = index;
+    let voiced = 0;
+    while (index < list.length && voiced < 18) {
+      if (list[index]?.voiced || list[index]?.unstable) voiced += 1;
+      else if (voiced >= 6) break;
+      index += 1;
+    }
+    if (voiced >= 2 && index > start) spans.push({ text: 'that', startIndex: start, endIndex: index });
+    if (index === start) index += 1;
+  }
+  return spans;
 }
 
 export function alignWords(frames, prompt) {
@@ -1026,10 +1048,12 @@ export function createCoachSession({
   routineId = 'week-1',
   lines = [],
   now = Date.now(),
-  id = ''
+  id = '',
+  practice = 'phrases'
 } = {}) {
   const sessionId = id || `coach-${now}`;
-  let mode = 'lines';
+  let mode = practice === 'conversation' ? 'conversation' : 'lines';
+  let questionIndex = 0;
   let lineIndex = 0;
   let lineAttempts = 0;
   let paused = false;
@@ -1052,11 +1076,13 @@ export function createCoachSession({
 
   function prompt() {
     if (mode === 'free') return '';
+    if (mode === 'conversation') return CONVERSATION_PROMPTS[questionIndex] || '';
     if (!lines.length || lineIndex < 0 || lineIndex >= lines.length) return '';
     return lines[lineIndex];
   }
 
   function exhausted() {
+    if (mode === 'conversation') return false;
     return mode === 'lines' && lines.length > 0 && lineIndex >= lines.length;
   }
 
@@ -1129,7 +1155,13 @@ export function createCoachSession({
       if (delta) row.delta = delta;
       notes.push(row);
     }
-    const wrap = { achieved: achieved.length, attempted: attempted.length, total: lines.length, takes: phraseCount, problems };
+    const wrap = {
+      achieved: achieved.length,
+      attempted: attempted.length,
+      total: mode === 'conversation' ? CONVERSATION_PROMPTS.length : lines.length,
+      takes: phraseCount,
+      problems
+    };
     if (notes.length) wrap.notes = notes.slice(0, HARD_WORD_CAP);
     if (soundTakes > 0) {
       const hz = savedTenth(soundHz / soundTakes, SOUND_HZ_MIN, SOUND_HZ_MAX);
@@ -1201,7 +1233,9 @@ export function createCoachSession({
       if (result.tooNoisy && phrases.length && phrases[phrases.length - 1].tooNoisy) {
         let attempts = lineAttempts;
         let counted = false;
-        if (mode === 'lines' && !exhausted()) {
+        // Conversation counts the same way as lines, so a noisy road can move on
+        // instead of staying on the question with nothing said.
+        if ((mode === 'lines' || mode === 'conversation') && !exhausted()) {
           const record = currentRecord();
           record.attempts += 1;
           lineAttempts = record.attempts;
@@ -1216,9 +1250,10 @@ export function createCoachSession({
       if (passed) cleanPhrases += 1;
       recomputeCue();
       cursor = result.feedback?.cursor ?? cursor + 1;
+      const heard = String(transcript || '').trim();
       const entry = {
         prompt: prompt(),
-        transcript: transcript || prompt(),
+        transcript: mode === 'conversation' ? heard : (heard || prompt()),
         feedback: result.feedback?.text || '',
         profile: result.profile?.label || 'androgynous',
         tooNoisy: !!result.tooNoisy,
@@ -1231,8 +1266,11 @@ export function createCoachSession({
       record.attempts += 1;
       lineAttempts = record.attempts;
       if (passed) record.achieved = true;
-      for (const word of entry.words) {
-        for (const issue of word.flags) record.words.push({ text: word.text, issue });
+      // No transcript means the slices are only a measuring stand-in ("that"), not words she said.
+      if (!(mode === 'conversation' && !heard)) {
+        for (const word of entry.words) {
+          for (const issue of word.flags) record.words.push({ text: word.text, issue });
+        }
       }
       const noteIssue = result.feedback?.issue;
       if (result.feedback?.spoken && noteIssue && noteIssue !== 'noisy' && noteIssue !== 'held') {
@@ -1261,6 +1299,13 @@ export function createCoachSession({
       return { events, entry };
     },
     advance() {
+      if (mode === 'conversation') {
+        closeCurrent();
+        questionIndex = (questionIndex + 1) % CONVERSATION_PROMPTS.length;
+        lineIndex = questionIndex;
+        lineAttempts = 0;
+        return prompt();
+      }
       if (mode !== 'lines' || !lines.length || lineIndex >= lines.length) return '';
       closeCurrent();
       lineIndex += 1;
@@ -1294,6 +1339,7 @@ export function createCoachSession({
         return { type: 'stop', say: 'Stopping. I saved this drive.', entry };
       }
       if (name === 'next') {
+        if (mode === 'conversation') return { type: 'next', say: this.advance() };
         if (mode !== 'lines') return { type: 'next', say: 'Next line.' };
         const next = this.advance();
         if (!next) {
@@ -1308,10 +1354,12 @@ export function createCoachSession({
       if (name === 'repeat') return { type: 'repeat', say: prompt() || 'Say that once more.' };
       if (name === 'summary') return { type: 'summary', say: spokenSummary() };
       if (name === 'free') {
+        if (mode === 'conversation') return { type: 'free', say: prompt() };
         mode = 'free';
         return { type: 'free', say: 'Free talk. I will coach whatever you say. Say lines when you want the prompts back.' };
       }
       if (name === 'lines') {
+        if (mode === 'conversation') return { type: 'lines', say: prompt() };
         mode = 'lines';
         return { type: 'lines', say: prompt() || 'Back to lines.' };
       }

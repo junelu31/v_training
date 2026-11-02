@@ -95,7 +95,10 @@ export function readDriveWrap(entry) {
     phonetics: row.phonetics,
     count: Number.isInteger(row.count) && row.count > 0 ? row.count : 1
   }));
-  const score = wrap.attempted > 0 ? `${wrap.achieved} of ${wrap.attempted} phrases achieved` : 'No phrases yet';
+  const conversation = entry?.coach?.mode === 'conversation';
+  const score = wrap.attempted > 0
+    ? `${wrap.achieved} of ${wrap.attempted} ${conversation ? 'questions on target' : 'phrases achieved'}`
+    : (conversation ? 'No questions yet' : 'No phrases yet');
   const total = Number.isInteger(wrap.total) && wrap.total >= 0 ? wrap.total : null;
   const notes = (Array.isArray(wrap.notes) ? wrap.notes : []).filter(row =>
     row && typeof row.phrase === 'string' && row.phrase.trim() && typeof row.detail === 'string' && row.detail.trim()
