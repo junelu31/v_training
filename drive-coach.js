@@ -103,6 +103,39 @@ function finiteMedian(values) {
   return median(values.filter(Number.isFinite));
 }
 
+function roundTenth(value) {
+  return Math.round(value * 10) / 10;
+}
+
+// Same window as Worker validateSound. A tenth outside it rejects the whole progress save.
+const SOUND_HZ_MIN = 50;
+const SOUND_HZ_MAX = 500;
+const SOUND_DB_MIN = -60;
+const SOUND_DB_MAX = 20;
+
+function savedTenth(value, min, max) {
+  if (!Number.isFinite(value) || value < min || value > max) return null;
+  const tenth = roundTenth(value);
+  if (!Number.isFinite(tenth) || tenth < min || tenth > max) return null;
+  return tenth;
+}
+
+/** Median pitch and brightness for one graded take. Missing either measure, or a reading outside the saved window, returns null. */
+export function takeSound(words = []) {
+  const hzValues = [];
+  const dbValues = [];
+  for (const word of Array.isArray(words) ? words : []) {
+    if (!word || (Number.isFinite(word.voiced) && word.voiced < 2)) continue;
+    if (Number.isFinite(word.hz)) hzValues.push(word.hz);
+    const db = Number.isFinite(word.brightness) ? word.brightness : word.resonance;
+    if (Number.isFinite(db)) dbValues.push(db);
+  }
+  const hz = savedTenth(finiteMedian(hzValues), SOUND_HZ_MIN, SOUND_HZ_MAX);
+  const db = savedTenth(finiteMedian(dbValues), SOUND_DB_MIN, SOUND_DB_MAX);
+  if (hz == null || db == null) return null;
+  return { hz, db };
+}
+
 function voicedSpan(frames) {
   let first = frames.findIndex(frame => frame.voiced || frame.unstable);
   let last = frames.length - 1;
@@ -1013,6 +1046,9 @@ export function createCoachSession({
   const phraseRecords = [];
   const pendingSaves = [];
   let checks = 0;
+  let soundHz = 0;
+  let soundDb = 0;
+  let soundTakes = 0;
 
   function prompt() {
     if (mode === 'free') return '';
@@ -1095,6 +1131,11 @@ export function createCoachSession({
     }
     const wrap = { achieved: achieved.length, attempted: attempted.length, total: lines.length, takes: phraseCount, problems };
     if (notes.length) wrap.notes = notes.slice(0, HARD_WORD_CAP);
+    if (soundTakes > 0) {
+      const hz = savedTenth(soundHz / soundTakes, SOUND_HZ_MIN, SOUND_HZ_MAX);
+      const db = savedTenth(soundDb / soundTakes, SOUND_DB_MIN, SOUND_DB_MAX);
+      if (hz != null && db != null) wrap.sound = { hz, db, takes: soundTakes };
+    }
     return wrap;
   }
 
@@ -1132,7 +1173,8 @@ export function createCoachSession({
           attempted: wrap.attempted,
           total: wrap.total,
           problems: wrap.problems,
-          ...(wrap.notes?.length ? { notes: wrap.notes } : {})
+          ...(wrap.notes?.length ? { notes: wrap.notes } : {}),
+          ...(wrap.sound ? { sound: wrap.sound } : {})
         }
       }
     };
@@ -1200,6 +1242,14 @@ export function createCoachSession({
           detail: plain(result.feedback.detail || result.feedback.text || '', 180),
           delta: plain(result.feedback.delta || '', 80)
         };
+      }
+      if (!result.tooNoisy) {
+        const sample = takeSound(result.words);
+        if (sample) {
+          soundHz += sample.hz;
+          soundDb += sample.db;
+          soundTakes += 1;
+        }
       }
       remember(entry);
       summary = spokenSummary();

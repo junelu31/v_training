@@ -287,6 +287,10 @@
             <canvas id="progressCanvas" width="1000" height="320"></canvas>
             <div class="empty-chart" id="emptyChart">Complete and save a practice attempt to begin your trend.</div>
           </article>
+          <article class="chart-card" id="weeklyTrendCard" aria-labelledby="weeklyTrendTitle">
+            <div class="section-heading compact"><div><span class="kicker">LAST 8 WEEKS</span><h2 id="weeklyTrendTitle">Weekly trend</h2></div></div>
+            <div id="weeklyTrend"></div>
+          </article>
           <article class="history-card"><div class="section-heading compact"><div><span class="kicker">HISTORY</span><h2>Recent practice</h2></div><button class="text-button danger" id="clearHistory">Clear history</button></div><audio id="historyPlayback" controls hidden></audio><p id="historyAudioStatus" class="analysis-status" role="status"></p><div id="historyList"></div></article>
         </section>
 

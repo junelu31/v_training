@@ -238,3 +238,246 @@ export function timedWordsFromVtt(vtt) {
 export function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
+
+export const TREND_WEEKS = 8;
+export const AURORA_PITCH_HZ = 172;
+export const AURORA_BRIGHTNESS_DB = -13.6;
+
+const TREND_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const TREND_ISSUES = {
+  drop: 'falling end',
+  chesty: 'dark resonance',
+  heavy: 'heavy',
+  fry: 'fry',
+  strain: 'pressed',
+  dark: 'dark',
+  low: 'low pitch',
+  breath: 'breathy',
+  high: 'high pitch',
+  flat: 'flat melody',
+  quiet: 'quiet',
+  fast: 'fast',
+  misread: 'misread'
+};
+
+function localCalendarDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+/** ISO week of the local calendar day. Monday starts the week. */
+export function isoWeekKey(value) {
+  const local = localCalendarDate(value);
+  if (!local) return '';
+  const thursday = new Date(local);
+  thursday.setDate(local.getDate() + 3 - ((local.getDay() + 6) % 7));
+  const week1 = new Date(thursday.getFullYear(), 0, 4);
+  const week = 1 + Math.round(((thursday - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
+  return `${thursday.getFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function trendWeeks(now, count) {
+  const monday = localCalendarDate(now);
+  if (!monday) return [];
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const weeks = [];
+  for (let ago = count - 1; ago >= 0; ago--) {
+    const start = new Date(monday);
+    start.setDate(monday.getDate() - ago * 7);
+    weeks.push({
+      key: isoWeekKey(start),
+      label: `${TREND_MONTHS[start.getMonth()]} ${start.getDate()}`,
+      sessions: 0,
+      passed: 0,
+      attempted: 0,
+      hzSum: 0,
+      hzN: 0,
+      dbSum: 0,
+      dbN: 0,
+      issues: new Map()
+    });
+  }
+  return weeks;
+}
+
+function finiteIn(value, min, max) {
+  return Number.isFinite(value) && value >= min && value <= max ? value : null;
+}
+
+function addMeasure(week, hz, db, weight) {
+  if (!(weight > 0)) return;
+  const pitch = finiteIn(hz, 50, 500);
+  const bright = finiteIn(db, -60, 20);
+  if (pitch != null) {
+    week.hzSum += pitch * weight;
+    week.hzN += weight;
+  }
+  if (bright != null) {
+    week.dbSum += bright * weight;
+    week.dbN += weight;
+  }
+}
+
+function topIssue(counts) {
+  let best = '';
+  let bestCount = 0;
+  for (const [issue, count] of counts) {
+    if (!TREND_ISSUES[issue]) continue;
+    if (count > bestCount || (count === bestCount && issue < best)) {
+      best = issue;
+      bestCount = count;
+    }
+  }
+  return best ? { issue: best, label: TREND_ISSUES[best], count: bestCount } : null;
+}
+
+function finishWeek(week) {
+  const passRate = week.attempted > 0 ? week.passed / week.attempted : null;
+  const issue = topIssue(week.issues);
+  return {
+    key: week.key,
+    label: week.label,
+    sessions: week.sessions,
+    passed: week.passed,
+    attempted: week.attempted,
+    passRate,
+    pitchHz: week.hzN > 0 ? Math.round((week.hzSum / week.hzN) * 10) / 10 : null,
+    brightnessDb: week.dbN > 0 ? Math.round((week.dbSum / week.dbN) * 10) / 10 : null,
+    issue: issue?.issue || null,
+    issueLabel: issue?.label || ''
+  };
+}
+
+function trendSummary(current, previous) {
+  const rate = week => (week && week.attempted > 0 ? (week.passed / week.attempted) * 100 : null);
+  const nowRate = rate(current);
+  const thenRate = rate(previous);
+  if (nowRate == null && thenRate == null) return 'No scored phrases in the last two weeks.';
+  if (nowRate == null) return 'No scored phrases this week yet.';
+  if (thenRate == null) return `This week’s pass rate is ${Math.round(nowRate)}%. Last week had no scored phrases.`;
+  const delta = Math.round(nowRate - thenRate);
+  if (delta > 0) return `Pass rate up ${delta}% from last week.`;
+  if (delta < 0) return `Pass rate down ${Math.abs(delta)}% from last week.`;
+  return 'Pass rate is even with last week.';
+}
+
+/**
+ * Last eight ISO weeks from Drive sessions and saved practice takes.
+ * Sessions and pass rate come from coach logs. Pitch and brightness use a
+ * session's saved sound when it has one, plus practice takes that stored raw
+ * pitch and brightness. Older Drive logs without sound still count, and are
+ * left out of those averages.
+ */
+export function weeklyTrend(source = {}, now = new Date()) {
+  const weeks = trendWeeks(now, TREND_WEEKS);
+  const byKey = new Map(weeks.map(week => [week.key, week]));
+  for (const entry of Array.isArray(source.driveLog) ? source.driveLog : []) {
+    if (entry?.kind !== 'coach') continue;
+    const week = byKey.get(isoWeekKey(entry.date));
+    if (!week) continue;
+    week.sessions += 1;
+    const wrap = entry.coach?.wrap;
+    if (wrap && Number.isInteger(wrap.achieved) && wrap.achieved >= 0 && Number.isInteger(wrap.attempted) && wrap.attempted >= wrap.achieved) {
+      week.passed += wrap.achieved;
+      week.attempted += wrap.attempted;
+    }
+    const sound = wrap?.sound;
+    if (sound && Number.isInteger(sound.takes) && sound.takes > 0) addMeasure(week, sound.hz, sound.db, sound.takes);
+    for (const note of Array.isArray(wrap?.notes) ? wrap.notes : []) {
+      if (note && TREND_ISSUES[note.issue]) week.issues.set(note.issue, (week.issues.get(note.issue) || 0) + 1);
+    }
+  }
+  for (const attempt of Array.isArray(source.attempts) ? source.attempts : []) {
+    const week = byKey.get(isoWeekKey(attempt?.date));
+    const raw = attempt?.raw;
+    if (!week || !raw) continue;
+    addMeasure(week, raw.pitch, raw.brightness, 1);
+  }
+  const finished = weeks.map(finishWeek);
+  return {
+    weeks: finished,
+    summary: trendSummary(finished[finished.length - 1], finished[finished.length - 2])
+  };
+}
+
+function svgNum(value) {
+  return Number(value).toFixed(1);
+}
+
+function passChart(weeks) {
+  const width = 320;
+  const height = 118;
+  const padX = 8;
+  const padTop = 16;
+  const padBottom = 22;
+  const gap = 6;
+  const barW = (width - padX * 2 - gap * (weeks.length - 1)) / weeks.length;
+  const inner = height - padTop - padBottom;
+  const bars = weeks.map((week, index) => {
+    const x = padX + index * (barW + gap);
+    const rate = week.passRate == null ? 0 : Math.max(0, Math.min(1, week.passRate));
+    const h = week.attempted > 0 ? Math.max(rate * inner, 2) : 0;
+    const y = padTop + inner - h;
+    const bar = h ? `<rect x="${svgNum(x)}" y="${svgNum(y)}" width="${svgNum(barW)}" height="${svgNum(h)}" rx="3" fill="#e77a60"></rect>` : `<rect x="${svgNum(x)}" y="${svgNum(padTop + inner - 1)}" width="${svgNum(barW)}" height="1" fill="#dcd8cf"></rect>`;
+    const label = week.passRate == null ? '—' : `${Math.round(week.passRate * 100)}`;
+    return `${bar}<text x="${svgNum(x + barW / 2)}" y="${height - 6}" text-anchor="middle" fill="#69736e" font-size="11" font-family="DM Sans, system-ui, sans-serif">${escapeHtml(week.label.split(' ')[1] || week.label)}</text><text x="${svgNum(x + barW / 2)}" y="${svgNum(Math.max(12, y - 4))}" text-anchor="middle" fill="#21322d" font-size="11" font-family="DM Sans, system-ui, sans-serif">${escapeHtml(label)}</text>`;
+  }).join('');
+  return `<svg class="trend-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Pass rate for the last eight weeks">${bars}</svg>`;
+}
+
+function sparkChart(weeks, key, target, label) {
+  const finite = weeks.map(week => week[key]).filter(value => Number.isFinite(value));
+  if (!finite.length) return `<p class="trend-empty">No ${escapeHtml(label)} saved in these weeks.</p>`;
+  const width = 320;
+  const height = 88;
+  const pad = 14;
+  let lo = Math.min(...finite, target);
+  let hi = Math.max(...finite, target);
+  if (hi - lo < 1) {
+    lo -= 1;
+    hi += 1;
+  }
+  const span = hi - lo || 1;
+  const xAt = index => pad + (weeks.length === 1 ? (width - pad * 2) / 2 : index / (weeks.length - 1) * (width - pad * 2));
+  const yAt = value => pad + (1 - (value - lo) / span) * (height - pad * 2);
+  const targetY = yAt(target);
+  let path = '';
+  let pen = false;
+  weeks.forEach((week, index) => {
+    const value = week[key];
+    if (!Number.isFinite(value)) {
+      pen = false;
+      return;
+    }
+    path += `${pen ? 'L' : 'M'}${svgNum(xAt(index))} ${svgNum(yAt(value))} `;
+    pen = true;
+  });
+  const dots = weeks.map((week, index) => Number.isFinite(week[key])
+    ? `<circle cx="${svgNum(xAt(index))}" cy="${svgNum(yAt(week[key]))}" r="3.5" fill="#fffdf8" stroke="#e77a60" stroke-width="2"></circle>`
+    : '').join('');
+  return `<svg class="trend-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(label)}">${`<line x1="${pad}" y1="${svgNum(targetY)}" x2="${width - pad}" y2="${svgNum(targetY)}" stroke="#718f7d" stroke-dasharray="4 4" stroke-width="1.5"></line><path d="${path.trim()}" fill="none" stroke="#e77a60" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"></path>${dots}`}</svg>`;
+}
+
+function weekLine(week) {
+  const sessions = `${week.sessions} session${week.sessions === 1 ? '' : 's'}`;
+  const passed = week.attempted > 0 ? `${week.passed} of ${week.attempted} passed` : 'no scored phrases';
+  const pitch = week.pitchHz == null ? 'pitch not saved' : `${week.pitchHz} Hz`;
+  const bright = week.brightnessDb == null ? 'resonance not saved' : `${week.brightnessDb} dB`;
+  const issue = week.issueLabel ? week.issueLabel : 'no main note';
+  return `<li><b>${escapeHtml(week.label)}</b><span>${escapeHtml(`${sessions} · ${passed}`)}</span><span>${escapeHtml(`${pitch} · ${bright} · ${issue}`)}</span></li>`;
+}
+
+/** Inline SVG and a readable week list. Numbers and labels only; no stored prose. */
+export function weeklyTrendHtml(trend) {
+  const data = trend && Array.isArray(trend.weeks) ? trend : { weeks: [], summary: '' };
+  const any = data.weeks.some(week => week.sessions > 0 || week.pitchHz != null || week.brightnessDb != null);
+  if (!any) {
+    return `<p class="trend-summary">${escapeHtml(data.summary || 'No scored phrases in the last two weeks.')}</p><p class="trend-empty">Drive sessions show up here after practice. Older sessions without pitch or resonance are left out of those averages.</p>`;
+  }
+  return `<p class="trend-summary">${escapeHtml(data.summary || '')}</p>
+    <p class="trend-caption">Pass rate</p>${passChart(data.weeks)}
+    <p class="trend-caption">Pitch vs ${AURORA_PITCH_HZ} Hz</p>${sparkChart(data.weeks, 'pitchHz', AURORA_PITCH_HZ, 'Average pitch versus 172 hertz')}
+    <p class="trend-caption">Resonance vs ${AURORA_BRIGHTNESS_DB} dB</p>${sparkChart(data.weeks, 'brightnessDb', AURORA_BRIGHTNESS_DB, 'Average resonance versus -13.6 decibels')}
+    <ol class="trend-weeks">${data.weeks.filter(week => week.sessions > 0 || week.pitchHz != null || week.brightnessDb != null).map(weekLine).join('')}</ol>`;
+}
