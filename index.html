@@ -234,9 +234,10 @@
           <p class="kicker" id="driveLengthLabel">UNTIMED PRACTICE</p>
           <p class="coach-note" id="driveLengthNote">There is no 20, 30, or 40 minute session. Phrases run from easiest to hardest, three tries each, until you tap End practice or finish the bank.</p>
           <p class="kicker" id="driveModeLabel">PRACTICE</p>
-          <div class="drive-voice" id="driveModes" role="group" aria-labelledby="driveModeLabel">
+          <div class="drive-voice drive-modes" id="driveModes" role="group" aria-labelledby="driveModeLabel">
             <button type="button" data-drive-mode="phrases" aria-pressed="true"><b>Phrases</b><small>Repeat the lines, easiest first.</small></button>
             <button type="button" data-drive-mode="conversation" aria-pressed="false"><b>Conversation</b><small>Answer a short question in your own words.</small></button>
+            <button type="button" data-drive-mode="japanese" aria-pressed="false"><b>Japanese</b><small>Repeat one sentence, then its variations.</small></button>
           </div>
           <p class="kicker" id="driveVoiceLabel">VOICE TO MATCH</p>
           <div class="drive-voice" id="driveVoices" role="group" aria-labelledby="driveVoiceLabel"></div>
@@ -325,6 +326,7 @@
     <div id="coachOverlay" class="coach-overlay" hidden tabindex="-1">
       <p class="coach-kicker" id="coachKicker">DRIVE COACH</p>
       <h1 id="coachLine">Listening.</h1>
+      <p id="coachMeaning" class="coach-meaning" hidden></p>
       <p id="coachSub" class="coach-sub"></p>
       <div class="coach-level" aria-hidden="true"><span id="coachLevel"></span></div>
       <p id="coachHeard" class="coach-heard" aria-live="polite"></p>

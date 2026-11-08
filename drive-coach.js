@@ -96,7 +96,7 @@ export function wordPhonetics(issue) {
 
 /** Leave the phrase after a clean pass or once the attempt cap is used. Free talk stays put. */
 export function shouldLeavePhrase({ ignored = false, passed = false, attempts = 0, mode = 'lines' } = {}) {
-  if (ignored || mode !== 'lines') return false;
+  if (ignored || (mode !== 'lines' && mode !== 'japanese')) return false;
   return Boolean(passed) || attempts >= MAX_PHRASE_ATTEMPTS;
 }
 
@@ -153,7 +153,8 @@ function voicedSpan(frames) {
 }
 
 /** Voiced slices for an answer that has no transcript. Each slice is long enough to measure. */
-export function conversationTimings(frames = []) {
+export function conversationTimings(frames = [], text = 'that') {
+  const label = String(text || 'that').slice(0, 32);
   const list = Array.isArray(frames) ? frames : [];
   const spans = [];
   let index = 0;
@@ -167,7 +168,7 @@ export function conversationTimings(frames = []) {
       else if (voiced >= 6) break;
       index += 1;
     }
-    if (voiced >= 2 && index > start) spans.push({ text: 'that', startIndex: start, endIndex: index });
+    if (voiced >= 2 && index > start) spans.push({ text: label, startIndex: start, endIndex: index });
     if (index === start) index += 1;
   }
   return spans;
@@ -1052,7 +1053,8 @@ export function createCoachSession({
   practice = 'phrases'
 } = {}) {
   const sessionId = id || `coach-${now}`;
-  let mode = practice === 'conversation' ? 'conversation' : 'lines';
+  let mode = practice === 'conversation' ? 'conversation' : practice === 'japanese' ? 'japanese' : 'lines';
+  const drilled = () => mode === 'lines' || mode === 'japanese';
   let questionIndex = 0;
   let lineIndex = 0;
   let lineAttempts = 0;
@@ -1083,7 +1085,7 @@ export function createCoachSession({
 
   function exhausted() {
     if (mode === 'conversation') return false;
-    return mode === 'lines' && lines.length > 0 && lineIndex >= lines.length;
+    return drilled() && lines.length > 0 && lineIndex >= lines.length;
   }
 
   function currentRecord() {
@@ -1235,7 +1237,7 @@ export function createCoachSession({
         let counted = false;
         // Conversation counts the same way as lines, so a noisy road can move on
         // instead of staying on the question with nothing said.
-        if ((mode === 'lines' || mode === 'conversation') && !exhausted()) {
+        if ((drilled() || mode === 'conversation') && !exhausted()) {
           const record = currentRecord();
           record.attempts += 1;
           lineAttempts = record.attempts;
@@ -1298,6 +1300,17 @@ export function createCoachSession({
       }
       return { events, entry };
     },
+    // A Japanese repeat of a different sentence is not a pass. The attempt
+    // already counted. This only clears the achieved flag that acoustic pass set.
+    clearAchievement() {
+      const record = phraseRecords.find(item => item.lineIndex === lineIndex && !item.closed);
+      if (!record?.achieved) return false;
+      record.achieved = false;
+      if (cleanPhrases > 0) cleanPhrases -= 1;
+      recomputeCue();
+      summary = spokenSummary();
+      return true;
+    },
     advance() {
       if (mode === 'conversation') {
         closeCurrent();
@@ -1306,7 +1319,7 @@ export function createCoachSession({
         lineAttempts = 0;
         return prompt();
       }
-      if (mode !== 'lines' || !lines.length || lineIndex >= lines.length) return '';
+      if (!drilled() || !lines.length || lineIndex >= lines.length) return '';
       closeCurrent();
       lineIndex += 1;
       lineAttempts = 0;
@@ -1340,7 +1353,7 @@ export function createCoachSession({
       }
       if (name === 'next') {
         if (mode === 'conversation') return { type: 'next', say: this.advance() };
-        if (mode !== 'lines') return { type: 'next', say: 'Next line.' };
+        if (!drilled()) return { type: 'next', say: 'Next line.' };
         const next = this.advance();
         if (!next) {
           stopped = true;
@@ -1354,12 +1367,12 @@ export function createCoachSession({
       if (name === 'repeat') return { type: 'repeat', say: prompt() || 'Say that once more.' };
       if (name === 'summary') return { type: 'summary', say: spokenSummary() };
       if (name === 'free') {
-        if (mode === 'conversation') return { type: 'free', say: prompt() };
+        if (mode === 'conversation' || mode === 'japanese') return { type: 'free', say: prompt() };
         mode = 'free';
         return { type: 'free', say: 'Free talk. I will coach whatever you say. Say lines when you want the prompts back.' };
       }
       if (name === 'lines') {
-        if (mode === 'conversation') return { type: 'lines', say: prompt() };
+        if (mode === 'conversation' || mode === 'japanese') return { type: 'lines', say: prompt() };
         mode = 'lines';
         return { type: 'lines', say: prompt() || 'Back to lines.' };
       }

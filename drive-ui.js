@@ -1,11 +1,12 @@
 import { SAMPLE_RATE, createTurnDetector, resampleLinear } from './drive-dsp.js';
 import { classifyUtterance, conversationTimings, createCoachSession, expectedVoicedMs, followUpLine, matchCommand, matchVoiceRequest, openingLine, parseEar, passNote, phraseDifficulty, MAX_PHRASE_ATTEMPTS, shouldLeavePhrase } from './drive-coach.js';
 import { CONVERSATION_NOISY_CAP, CONVERSATION_NOISY_LINE } from './drive-conversation.js';
+import { containsJapaneseScript, expectedJapaneseVoicedMs, japaneseLines, japaneseMeaning, japanesePlace, japaneseRepeatMatch, JAPANESE_MEASURE_LABEL, JAPANESE_SPEECH_LANG, JAPANESE_SPEECH_RATE, JAPANESE_VOICE_MISSING, pickJapaneseVoice } from './drive-japanese.js';
 import { praiseLine } from './drive-cues.js';
 import { createDriveSession, readTurn } from './drive-session.js';
 import { applyVisibility, awakeLabel, createStayAwake } from './drive-wake.js';
 import { COACH_VOICE, DRIVE_VOICES, DRIVE_VOICE_ORDER, PRACTICE_VOICE, planSpeech, readDriveVoice, speechHasClip, voiceKey, writeDriveVoice } from './drive-voice.js';
-import { prependBreath, readBreathCue, shouldCueBreath } from './drive-breath.js';
+import { BREATH_GAP_SECONDS, BREATH_SECONDS, breathSamples, prependBreath, readBreathCue, shouldCueBreath } from './drive-breath.js';
 import { DEVICE_SPEECH_VOLUME, clipPlaybackGain, gainForBuffer, scaleBuffer } from './drive-clip-gains.js';
 import { PRACTICE_CLIPS, VOICE_CLIPS } from './drive-voice-clips.js';
 import { afterMicRequest, bufferPlayed, interruptionHeld, micFailureCopy, mixChannels, needsDirectScriptCapture, onContextState, PLAYBACK_CUT_MS, startupCoversInterruption, usePlayAndRecord } from './drive-mic-start.js';
@@ -80,8 +81,13 @@ function show(line, sub = '') {
   if (!overlay) return;
   const wasHidden = overlay.hidden;
   overlay.hidden = false;
-  el('coachLine').textContent = line;
+  const lineNode = el('coachLine');
+  if (lineNode) {
+    lineNode.textContent = line;
+    lineNode.classList?.toggle?.('coach-line-jp', containsJapaneseScript(line));
+  }
   el('coachSub').textContent = sub;
+  paintMeaning(line, sub);
   paintDriveVoice();
   paintProgress();
   const guide = el('coachGuide');
@@ -99,8 +105,16 @@ function paintProgress() {
   }
   const status = session.status();
   const phrase = session.prompt();
-  if (!phrase || status.mode !== 'lines') {
+  if (!phrase || (status.mode !== 'lines' && status.mode !== 'japanese')) {
     node.textContent = '';
+    return;
+  }
+  if (status.mode === 'japanese') {
+    const place = japanesePlace(status.lineIndex);
+    const upcoming = Math.min((status.lineAttempts || 0) + 1, MAX_PHRASE_ATTEMPTS);
+    node.textContent = place.variation
+      ? `Sentence ${place.family} of ${place.families} · variation ${place.variation} of ${place.variations} · try ${upcoming} of ${MAX_PHRASE_ATTEMPTS}`
+      : '';
     return;
   }
   const { band } = phraseDifficulty(phrase);
@@ -108,6 +122,24 @@ function paintProgress() {
   const upcoming = Math.min((status.lineAttempts || 0) + 1, MAX_PHRASE_ATTEMPTS);
   const place = Math.min(status.lineIndex + 1, status.lineCount || status.lineIndex + 1);
   node.textContent = `${label} · phrase ${place} of ${status.lineCount} · try ${upcoming} of ${MAX_PHRASE_ATTEMPTS}`;
+}
+
+function paintMeaning(line, sub) {
+  const node = el('coachMeaning');
+  if (!node) return;
+  const japanese = !practiceOver && session?.status?.().mode === 'japanese';
+  const meaning = japanese ? (japaneseMeaning(line) || japaneseMeaning(sub) || japaneseMeaning(session.prompt())) : '';
+  node.hidden = !meaning;
+  node.textContent = meaning;
+}
+
+function voicedExpectation() {
+  if (!session) return 0;
+  const mode = session.status().mode;
+  if (mode === 'conversation') return 0;
+  const prompt = session.prompt();
+  if (mode === 'japanese') return expectedJapaneseVoicedMs(prompt);
+  return expectedVoicedMs(prompt);
 }
 
 function showHeard(text) {
@@ -526,6 +558,8 @@ async function playDecoded(bytes, token, breath = false) {
 
 // Device speech, used only for a line without a clip when cloud speech is unavailable.
 function speakDevice(text) {
+  // English device speech only. Japanese never falls through to an en-US voice.
+  if (containsJapaneseScript(text)) return Promise.resolve(false);
   if (!window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return Promise.resolve(false);
   return new Promise(resolve => {
     const utterance = new SpeechSynthesisUtterance(text);
@@ -563,6 +597,7 @@ function stopSpeech() {
 }
 
 async function playPart(part, token, bank, breath = false) {
+  if (part.text && containsJapaneseScript(part.text)) return false;
   if (part.clip) {
     const result = await playClip(clipIn(bank, part.clip), token, breath);
     if (result === 'played') return true;
@@ -604,6 +639,10 @@ function wantsBreath(text) {
   return shouldCueBreath(text, session?.prompt?.() || '', breathCueEnabled());
 }
 
+function isJapanesePrompt(text) {
+  return session?.status?.().mode === 'japanese' && text === session.prompt();
+}
+
 function speak(text) {
   if (!text) return Promise.resolve(true);
   stopSpeech();
@@ -611,8 +650,91 @@ function speak(text) {
   speaking = true;
   // Mute the mic before any sample, including the inhale in front of a phrase.
   detector?.setSpeaking(true);
+  // The Japanese sentence is on-device ja-JP speech. English coaching stays on the clip voice.
+  if (isJapanesePrompt(text)) return finishJapaneseSpeech(text, token);
   // Keep this line on the voice that started it. A switch applies to the next line.
   return finishSpeech(text, token, clipBank());
+}
+
+function japaneseVoices() {
+  const synth = typeof window === 'undefined' ? null : window.speechSynthesis;
+  if (!synth || typeof synth.getVoices !== 'function') return Promise.resolve([]);
+  const ready = synth.getVoices() || [];
+  if (ready.length) return Promise.resolve(ready);
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      synth.removeEventListener?.('voiceschanged', finish);
+      resolve(synth.getVoices?.() || []);
+    };
+    synth.addEventListener?.('voiceschanged', finish);
+    setTimeout(finish, 700);
+  });
+}
+
+async function playBreathOnly(token) {
+  const ctx = ensureContext();
+  if (!(await whenRunning(ctx, token)) || token !== speechToken) return false;
+  const rate = ctx.sampleRate || 48000;
+  const breathFrames = Math.max(1, Math.round(rate * BREATH_SECONDS));
+  const gapFrames = Math.max(0, Math.round(rate * BREATH_GAP_SECONDS));
+  let buffer;
+  try {
+    buffer = ctx.createBuffer(1, breathFrames + gapFrames, rate);
+    const out = buffer.getChannelData(0);
+    const breath = breathSamples(breathFrames, rate);
+    for (let i = 0; i < breath.length && i < out.length; i++) out[i] = breath[i] * DEVICE_SPEECH_VOLUME;
+  } catch { return false; }
+  return startBuffer(ctx, buffer, token);
+}
+
+function speakJapaneseUtterance(text, voice, token) {
+  if (typeof window === 'undefined' || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return Promise.resolve(false);
+  return new Promise(resolve => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = JAPANESE_SPEECH_LANG;
+    utterance.rate = JAPANESE_SPEECH_RATE;
+    utterance.pitch = 1;
+    utterance.volume = DEVICE_SPEECH_VOLUME;
+    if (voice) utterance.voice = voice;
+    let settled = false;
+    const limit = setTimeout(() => finish(true), 4000 + [...text].length * 180);
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(limit);
+      resolve(Boolean(ok && token === speechToken));
+    }
+    utterance.onend = () => finish(true);
+    utterance.onerror = () => finish(false);
+    window.speechSynthesis.speak(utterance);
+  });
+}
+
+async function finishJapaneseSpeech(text, token) {
+  const breath = wantsBreath(text);
+  try {
+    if (breath && token === speechToken) await playBreathOnly(token);
+    if (token !== speechToken) return false;
+    const voice = pickJapaneseVoice(await japaneseVoices());
+    if (token !== speechToken) return false;
+    if (!voice) {
+      showHeard(JAPANESE_VOICE_MISSING);
+      return false;
+    }
+    const ok = await speakJapaneseUtterance(text, voice, token);
+    if (!ok && token === speechToken) showHeard(JAPANESE_VOICE_MISSING);
+    await new Promise(resolve => setTimeout(resolve, SPEECH_TAIL_MS));
+    return Boolean(ok && token === speechToken);
+  } finally {
+    if (token === speechToken) {
+      speaking = false;
+      if (!judging) detector?.setSpeaking(false);
+      if (audioContext && audioContext.state === 'suspended' && !hiddenByPage && !userPaused) audioContext.resume().catch(() => {});
+    }
+  }
 }
 
 async function finishSpeech(text, token, bank) {
@@ -653,6 +775,7 @@ function fetchWithTimeout(url, options, ms = 2500) {
 }
 
 async function cloudSpeech(text) {
+  if (containsJapaneseScript(text)) return null;
   try {
     const response = await fetchWithTimeout('/api/drive/turn', {
       method: 'POST',
@@ -704,7 +827,11 @@ async function cloudTurn(samples, sampleRate) {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       // The reply's speech is never played, so do not ask the Worker to synthesize it.
-      body: JSON.stringify({ audioBase64: wavBase64(samples, sampleRate), say: '' })
+      body: JSON.stringify({
+      audioBase64: wavBase64(samples, sampleRate),
+      say: '',
+      ...(session?.status?.().mode === 'japanese' ? { lang: 'ja' } : {})
+    })
     }, TURN_TIMEOUT_MS);
     if (!response.ok) return null;
     return response.json();
@@ -866,10 +993,19 @@ export function planCoachTurn({
   lastLine = ''
 }) {
   const prompt = coachSession.prompt();
-  const conversing = coachSession.status().mode === 'conversation';
+  const mode = coachSession.status().mode;
+  const conversing = mode === 'conversation';
+  const japanese = mode === 'japanese';
   const said = String(heard || '').trim();
-  const timings = conversing && !said ? conversationTimings(turn?.frames || []) : null;
+  const timings = conversing && !said
+    ? conversationTimings(turn?.frames || [])
+    : japanese
+      ? conversationTimings(turn?.frames || [], JAPANESE_MEASURE_LABEL)
+      : null;
   const gradePrompt = conversing ? (said || (timings || []).map(word => word.text).join(' ')) : prompt;
+  // A Japanese transcript is not English word soup. Keep misread off so coaching stays acoustic.
+  const gradeTranscript = japanese ? '' : (conversing ? said : heard);
+  const languageMiss = japanese && japaneseRepeatMatch(prompt, said) === 'mismatch';
   const requested = matchVoiceRequest(heard, { prompt });
   if (requested) {
     return {
@@ -889,7 +1025,7 @@ export function planCoachTurn({
   const judged = classifyUtterance({
     analysis: turn,
     prompt: gradePrompt,
-    transcript: conversing ? said : heard,
+    transcript: gradeTranscript,
     timings,
     goal,
     ear,
@@ -918,6 +1054,7 @@ export function planCoachTurn({
   }
   if (judged.feedback) judged.feedback = { ...judged.feedback, text: localText, spoken: Boolean(localText) };
   const noted = coachSession.noteAnalysis(judged, { transcript: conversing ? said : (heard || prompt), at });
+  if (languageMiss && !noted.ignored) coachSession.clearAchievement();
   if (noted.ignored) {
     const afterIgnored = coachSession.status();
     // Done talking flushes into this same plan. A counted noisy retry still speaks,
@@ -990,7 +1127,7 @@ export function planCoachTurn({
   }
   const coached = Boolean(judged.feedback?.spoken);
   const tooNoisy = Boolean(judged.tooNoisy || turn.tooNoisy);
-  const passed = !coached && !tooNoisy;
+  const passed = !coached && !tooNoisy && !languageMiss;
   if (conversing) {
     const moveOn = !tooNoisy || coachSession.status().lineAttempts >= CONVERSATION_NOISY_CAP;
     const nextQuestion = moveOn ? coachSession.advance() : coachSession.prompt();
@@ -1025,7 +1162,7 @@ export function planCoachTurn({
   const finished = Boolean(moveOn && !next && coachSession.status().exhausted);
   const follow = moveOn
     ? (next ? followUpLine({ prompt: next, coached: false, tooNoisy: false, next, voice }) : '')
-    : followUpLine({ prompt: coachSession.prompt(), coached, tooNoisy, next: '', voice });
+    : followUpLine({ prompt: coachSession.prompt(), coached: coached || languageMiss, tooNoisy, next: '', voice });
   const praise = passed ? praiseLine(after.cursor, lastPraise) : '';
   const note = passed ? passNote({ words: judged.words || [], goal, voice }) : '';
   return {
@@ -1037,7 +1174,7 @@ export function planCoachTurn({
     follow,
     finished,
     say: '',
-    heardLine: coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : 'Heard you. That matched.',
+    heardLine: coached ? 'Heard you. One thing to adjust.' : tooNoisy ? 'Heard you, but it was too noisy to judge.' : languageMiss ? 'Heard you.' : 'Heard you. That matched.',
     statusHeld: /\btoo noisy\b/i.test(judged.feedback?.text || ''),
     checkpoint: noted.events.some(event => event.type === 'feedback'),
     showLine: coachSession.prompt() || 'Free talk whenever you are ready.',
@@ -1116,7 +1253,7 @@ async function judgeTurn(turn) {
 
 function pushCaptured(input, ctx) {
   lastFrameAt = Date.now();
-  if (session && detector) detector.setExpectation(session.status().mode === 'conversation' ? 0 : expectedVoicedMs(session.prompt()));
+  if (session && detector) detector.setExpectation(voicedExpectation());
   const copy = new Float32Array(input.length);
   copy.set(input);
   const samples = ctx.sampleRate === SAMPLE_RATE ? copy : resampleLinear(copy, ctx.sampleRate, SAMPLE_RATE);
@@ -1324,9 +1461,13 @@ function loadDriveVoice() {
 function paintDriveVoice() {
   const voice = DRIVE_VOICES[driveVoiceId] || DRIVE_VOICES[COACH_VOICE];
   const note = el('driveVoiceNote');
-  if (note) note.textContent = voice.note;
+  if (note) {
+    note.textContent = practiceMode === 'japanese'
+      ? 'The sentence is spoken in Japanese on this phone. Coaching still uses your voice goal.'
+      : voice.note;
+  }
   const kicker = el('coachKicker');
-  if (kicker) kicker.textContent = voice.kicker;
+  if (kicker) kicker.textContent = practiceMode === 'japanese' && session && !session.status().stopped ? 'DRIVE COACH · JAPANESE' : voice.kicker;
   const switchButton = el('coachVoiceSwitch');
   if (switchButton) switchButton.textContent = voice.switchTo;
   const box = el('driveVoices');
@@ -1340,6 +1481,7 @@ function paintDriveVoice() {
 
 function paintPracticeMode() {
   const conversing = practiceMode === 'conversation';
+  const japanese = practiceMode === 'japanese';
   const box = el('driveModes');
   if (box && typeof box.querySelectorAll === 'function') {
     for (const button of box.querySelectorAll('[data-drive-mode]')) {
@@ -1349,20 +1491,27 @@ function paintPracticeMode() {
   }
   const note = el('driveLengthNote');
   if (note) {
-    note.textContent = conversing
-      ? 'Conversation asks a short question, then listens for up to about thirty seconds. A two second pause ends the answer. It runs until you tap End practice.'
-      : 'There is no 20, 30, or 40 minute session. Phrases run from easiest to hardest, three tries each, until you tap End practice or finish the bank.';
+    note.textContent = japanese
+      ? 'One Japanese sentence at a time. Variations stay on that sentence, then the next one starts. Three tries each, until you tap End practice.'
+      : conversing
+        ? 'Conversation asks a short question, then listens for up to about thirty seconds. A two second pause ends the answer. It runs until you tap End practice.'
+        : 'There is no 20, 30, or 40 minute session. Phrases run from easiest to hardest, three tries each, until you tap End practice or finish the bank.';
   }
   const startNote = el('driveStartNote');
   if (startNote) {
-    startNote.textContent = conversing
-      ? 'After you start, she asks a short question. Answer in your own words. A two second pause, or Done talking, ends the answer. End practice stops the session. The screen stays on until you end it. Switching apps pauses the coach until you come back.'
-      : 'After you start, talk through the lines from easiest to hardest. Three tries, then the next phrase. Say next, repeat, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the whole session. The screen stays on until you end it. Switching apps pauses the coach until you come back.';
+    startNote.textContent = japanese
+      ? 'After you start, you hear one Japanese sentence and say it back. Three tries, then a small change to that same sentence. Say next, repeat, pause, how am I doing, or end practice. End practice saves the session.'
+      : conversing
+        ? 'After you start, she asks a short question. Answer in your own words. A two second pause, or Done talking, ends the answer. End practice stops the session. The screen stays on until you end it. Switching apps pauses the coach until you come back.'
+        : 'After you start, talk through the lines from easiest to hardest. Three tries, then the next phrase. Say next, repeat, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the whole session. The screen stays on until you end it. Switching apps pauses the coach until you come back.';
   }
   const lines = el('driveLines');
-  if (lines) lines.hidden = conversing;
+  if (lines) lines.hidden = conversing || japanese;
+  const voiceLabel = el('driveVoiceLabel');
+  if (voiceLabel) voiceLabel.textContent = japanese ? 'COACHING VOICE' : 'VOICE TO MATCH';
   const done = el('coachDone');
   if (done && (!session || session.status().stopped)) done.hidden = !conversing;
+  paintDriveVoice();
 }
 
 function finishAnswer() {
@@ -1376,7 +1525,8 @@ function bindPracticeMode() {
     for (const button of box.querySelectorAll('[data-drive-mode]')) {
       button.onclick = () => {
         if (session && !session.status().stopped) return;
-        practiceMode = button.dataset.driveMode === 'conversation' ? 'conversation' : 'phrases';
+        const picked = button.dataset.driveMode;
+        practiceMode = picked === 'conversation' ? 'conversation' : picked === 'japanese' ? 'japanese' : 'phrases';
         paintPracticeMode();
       };
     }
@@ -1524,22 +1674,23 @@ function ensureSession() {
     problems.hidden = true;
     problems.textContent = '';
   }
-  const switchButton = el('coachVoiceSwitch');
-  if (switchButton) switchButton.hidden = false;
   const conversing = practiceMode === 'conversation';
+  const japanese = practiceMode === 'japanese';
+  const switchButton = el('coachVoiceSwitch');
+  if (switchButton) switchButton.hidden = japanese;
   session = createCoachSession({
     plannedMinutes: savedDeps.getPlanned(),
     routineId: savedDeps.getRoutine(),
-    lines: conversing ? [] : savedDeps.getLines(),
+    lines: conversing ? [] : japanese ? japaneseLines() : savedDeps.getLines(),
     now: Date.now(),
-    practice: conversing ? 'conversation' : 'phrases'
+    practice: conversing ? 'conversation' : japanese ? 'japanese' : 'phrases'
   });
   detector = createTurnDetector({
     sampleRate: SAMPLE_RATE,
     onTurn,
     ...(conversing ? { maxTurnSec: 28, endSilenceMs: 2000 } : {})
   });
-  detector.setExpectation(conversing ? 0 : expectedVoicedMs(session.prompt()));
+  detector.setExpectation(voicedExpectation());
   const done = el('coachDone');
   if (done) done.hidden = !conversing;
   const commands = el('coachCommands');
@@ -1547,7 +1698,9 @@ function ensureSession() {
     commands.hidden = false;
     commands.textContent = conversing
       ? 'Answer in your own words. A two second pause, or Done talking, ends the answer. You can say next, pause, or end practice.'
-      : 'You can say next phrase, say it again, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the session.';
+      : japanese
+        ? 'Say the Japanese sentence. You can say next phrase, say it again, pause, how am I doing, or end practice. End practice stops the session.'
+        : 'You can say next phrase, say it again, pause, how am I doing, practice voice, main voice, or end practice. End practice stops the session.';
   }
   lastFeedback = '';
   statusHeld = false;
@@ -1582,7 +1735,8 @@ async function begin(ready, micPromise = null, { opening = '', spoken = null } =
   hiddenByPage = false;
   const resumeButton = el('coachResume');
   if (resumeButton) resumeButton.hidden = true;
-  show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback || 'I am listening.');
+  const listening = session.status().mode === 'japanese' ? '' : 'I am listening.';
+  show(session.prompt() || 'Free talk whenever you are ready.', lastFeedback || listening);
   try {
     if (fileTest) {
       awaitingPermission = false;

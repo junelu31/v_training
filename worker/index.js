@@ -208,7 +208,7 @@ function validateCoach(entry) {
   const coach = entry.coach;
   if (!coach || typeof coach !== 'object' || Array.isArray(coach)) throw new HttpError(400, 'Invalid drive log.');
   if (!Number.isFinite(coach.minutes) || coach.minutes < 0 || coach.minutes > 120) throw new HttpError(400, 'Invalid drive log.');
-  if (!['lines', 'free', 'conversation'].includes(coach.mode)) throw new HttpError(400, 'Invalid drive log.');
+  if (!['lines', 'free', 'conversation', 'japanese'].includes(coach.mode)) throw new HttpError(400, 'Invalid drive log.');
   const flag = value => {
     if (value == null) return false;
     if (typeof value !== 'boolean') throw new HttpError(400, 'Invalid drive log.');
@@ -426,7 +426,13 @@ function wordsFromTranscript(output) {
   return { text, words: segmented };
 }
 
+function containsJapaneseScript(text) {
+  return /[\u3040-\u30ff\u4e00-\u9fff]/.test(String(text || ''));
+}
+
 async function speakLine(env, say) {
+  // Japanese lines are spoken on the device. Do not send them to an English voice.
+  if (containsJapaneseScript(say)) return null;
   try {
     // Dynamic lines are not baked. Deepgram Aura-2 "aurora" is the closest speaker
     // on this model: adult, American, feminine. Pre-baked clips stay xAI Aurora.
@@ -440,38 +446,53 @@ async function speakLine(env, say) {
   }
 }
 
+async function transcribeDrive(env, audio, { japanese = false } = {}) {
+  try {
+    // nova-3 takes the audio as { body, contentType }. A data: URL fails schema validation.
+    const wav = Uint8Array.from(atob(audio.replace(/^data:[^,]*,/, '')), character => character.charCodeAt(0));
+    // English stays on the previous call, with no language field. Japanese listens in
+    // multi so the sentence can match and an English "end practice" still transcribes.
+    const novaInput = { audio: { body: new Blob([wav]).stream(), contentType: 'audio/wav' }, punctuate: true, smart_format: false };
+    if (japanese) novaInput.language = 'multi';
+    const nova = await env.AI.run('@cf/deepgram/nova-3', novaInput);
+    const parsed = wordsFromTranscript(nova);
+    if (parsed.text) return { ...parsed, model: '@cf/deepgram/nova-3' };
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'nova-3 failed', error: error instanceof Error ? error.message : String(error) }));
+  }
+  try {
+    const whisper = await env.AI.run('@cf/openai/whisper-large-v3-turbo', {
+      audio,
+      task: 'transcribe',
+      language: japanese ? 'ja' : 'en',
+      vad_filter: true
+    });
+    const parsed = wordsFromTranscript(whisper);
+    return { ...parsed, model: '@cf/openai/whisper-large-v3-turbo' };
+  } catch (error) {
+    console.error(JSON.stringify({ message: 'whisper fallback failed', error: error instanceof Error ? error.message : String(error) }));
+    return { text: '', words: [], model: null };
+  }
+}
+
 async function driveTurn(request, env, db, user) {
   const input = await body(request);
   const audio = typeof input?.audioBase64 === 'string' ? input.audioBase64 : '';
   const say = typeof input?.say === 'string' ? input.say.replace(/[<>]/g, '').slice(0, 280) : '';
+  const japanese = input?.lang === 'ja';
   if ((!audio && !say) || audio.length > 900000) throw new HttpError(400, 'Send a short WAV phrase.');
   if (!env.AI) throw new HttpError(503, 'Drive coach cloud models are not configured. On-device coaching still runs.');
   await limit(db, `drive:${user.id}`, 160);
   const started = Date.now();
   if (!audio) {
+    if (japanese || containsJapaneseScript(say)) {
+      return json({ transcript: '', words: [], sttModel: null, ear: null, earModel: null, speech: null, latencyMs: Date.now() - started });
+    }
     const speech = await speakLine(env, say);
     return json({ transcript: '', words: [], sttModel: null, ear: null, earModel: null, speech, latencyMs: Date.now() - started });
   }
   const audioUrl = audio.startsWith('data:') ? audio : `data:audio/wav;base64,${audio}`;
-  const transcribe = (async () => {
-    try {
-      // nova-3 takes the audio as { body, contentType }. A data: URL fails schema validation.
-      const wav = Uint8Array.from(atob(audio.replace(/^data:[^,]*,/, '')), character => character.charCodeAt(0));
-      const nova = await env.AI.run('@cf/deepgram/nova-3', { audio: { body: new Blob([wav]).stream(), contentType: 'audio/wav' }, punctuate: true, smart_format: false });
-      const parsed = wordsFromTranscript(nova);
-      if (parsed.text) return { ...parsed, model: '@cf/deepgram/nova-3' };
-    } catch (error) {
-      console.error(JSON.stringify({ message: 'nova-3 failed', error: error instanceof Error ? error.message : String(error) }));
-    }
-    try {
-      const whisper = await env.AI.run('@cf/openai/whisper-large-v3-turbo', { audio, task: 'transcribe', language: 'en', vad_filter: true });
-      const parsed = wordsFromTranscript(whisper);
-      return { ...parsed, model: '@cf/openai/whisper-large-v3-turbo' };
-    } catch (error) {
-      console.error(JSON.stringify({ message: 'whisper fallback failed', error: error instanceof Error ? error.message : String(error) }));
-      return { text: '', words: [], model: null };
-    }
-  })();
+  const transcribe = transcribeDrive(env, audio, { japanese });
   const ear = (async () => {
     try {
       const output = await env.AI.run('@cf/cloudflare/clef-omni', { model: 'clef-omni', state: {}, audio: [audioUrl], questions: DRIVE_QUESTIONS });
