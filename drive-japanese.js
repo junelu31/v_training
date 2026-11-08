@@ -41,20 +41,16 @@ function normalizeJapanese(text) {
 
 /**
  * Whether a transcript is the same sentence. 'unknown' when recognition
- * returned nothing. A mismatch is not a vocabulary lesson.
+ * returned nothing. Equality is the whole normalized sentence: another
+ * sentence in the bank must not count, even when most characters overlap.
+ * A mismatch is not a vocabulary lesson.
  */
 export function japaneseRepeatMatch(expected, heard) {
   const want = normalizeJapanese(expected);
   const said = normalizeJapanese(heard);
   if (!want || !said) return 'unknown';
   if (!containsJapaneseScript(heard)) return 'mismatch';
-  if (said === want || (want.length >= 4 && (said.includes(want) || want.includes(said)))) return 'match';
-  const seen = new Set(want);
-  let hit = 0;
-  for (const char of said) if (seen.has(char)) hit += 1;
-  const overlap = hit / Math.max(said.length, want.length);
-  if (overlap >= 0.72 && said.length >= Math.min(4, want.length)) return 'match';
-  return 'mismatch';
+  return said === want ? 'match' : 'mismatch';
 }
 
 /** Voiced time a short Japanese sentence usually takes, so a mid-line breath does not end the take. */

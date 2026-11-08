@@ -1300,6 +1300,17 @@ export function createCoachSession({
       }
       return { events, entry };
     },
+    // A Japanese repeat of a different sentence is not a pass. The attempt
+    // already counted. This only clears the achieved flag that acoustic pass set.
+    clearAchievement() {
+      const record = phraseRecords.find(item => item.lineIndex === lineIndex && !item.closed);
+      if (!record?.achieved) return false;
+      record.achieved = false;
+      if (cleanPhrases > 0) cleanPhrases -= 1;
+      recomputeCue();
+      summary = spokenSummary();
+      return true;
+    },
     advance() {
       if (mode === 'conversation') {
         closeCurrent();

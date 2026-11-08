@@ -85,15 +85,33 @@ test('the Japanese bank is sentence families, not a word list', () => {
   assert.equal(expectedJapaneseVoicedMs(''), 0);
 });
 
-test('a repeat matches the whole sentence and ignores an English gloss', () => {
+test('a repeat matches only the same normalized sentence', () => {
   const sentence = '水を飲みます。';
   assert.equal(japaneseRepeatMatch(sentence, sentence), 'match');
   assert.equal(japaneseRepeatMatch(sentence, '水を飲みます'), 'match');
+  assert.equal(japaneseRepeatMatch(sentence, '水を 飲みます。'), 'match');
+  assert.equal(japaneseRepeatMatch('コーヒーを飲みます。', 'こーひーを飲みます。'), 'match');
+  assert.equal(japaneseRepeatMatch(sentence, 'ジュースを飲みます。'), 'mismatch');
+  assert.equal(japaneseRepeatMatch('ジュースを飲みます。', sentence), 'mismatch');
   assert.equal(japaneseRepeatMatch(sentence, 'お茶を飲みます。'), 'mismatch');
   assert.equal(japaneseRepeatMatch(sentence, 'I drink water.'), 'mismatch');
   assert.equal(japaneseRepeatMatch(sentence, 'mizu o nomimasu'), 'mismatch');
   assert.equal(japaneseRepeatMatch(sentence, ''), 'unknown');
   assert.equal(japaneseRepeatMatch(sentence, '   '), 'unknown');
+  for (const family of JAPANESE_FAMILIES) {
+    for (let i = 0; i < family.items.length; i += 1) {
+      for (let j = 0; j < family.items.length; j += 1) {
+        if (i === j) continue;
+        assert.equal(japaneseRepeatMatch(family.items[i].jp, family.items[j].jp), 'mismatch', `${family.id}: ${family.items[i].jp} / ${family.items[j].jp}`);
+      }
+    }
+  }
+  for (let i = 0; i < lines.length; i += 1) {
+    for (let j = 0; j < lines.length; j += 1) {
+      if (i === j) continue;
+      assert.equal(japaneseRepeatMatch(lines[i], lines[j]), 'mismatch', `${lines[i]} / ${lines[j]}`);
+    }
+  }
 });
 
 test('Japanese speech picks a feminine ja-JP voice and never a known male one', () => {
@@ -164,6 +182,7 @@ test('a Japanese take is coached like a phrase, then the same family continues',
   assert.ok(clean.praise);
   assert.equal(clean.follow, lines[1]);
   assert.equal(session.prompt(), lines[1]);
+  assert.equal(session.wrapUp().achieved, 1);
   const again = createCoachSession({ practice: 'japanese', lines, now: 4_000, id: 'miss' });
   const missed = planCoachTurn({
     session: again,
@@ -176,6 +195,39 @@ test('a Japanese take is coached like a phrase, then the same family continues',
   assert.equal(missed.follow, lines[0]);
   assert.equal(again.prompt(), lines[0]);
   assert.equal(missed.heardLine, 'Heard you.');
+  assert.equal(again.status().lineAttempts, 1);
+  const missedWrap = again.finalEntry(5_500);
+  assert.equal(missedWrap.coach.wrap.achieved, 0);
+  assert.equal(missedWrap.coach.wrap.attempted, 1);
+  const juice = createCoachSession({ practice: 'japanese', lines, now: 5_600, id: 'juice' });
+  const juiceTake = planCoachTurn({
+    session: juice,
+    turn: { frames: variedPitch(), tooNoisy: false, hopVoicedMs: 900 },
+    heard: 'ジュースを飲みます。',
+    goal,
+    at: 5_700
+  });
+  assert.equal(juiceTake.praise, '');
+  assert.equal(juice.prompt(), lines[0]);
+  assert.equal(juice.finalEntry(5_800).coach.wrap.achieved, 0);
+  const wrong = createCoachSession({ practice: 'japanese', lines, now: 5_900, id: 'wrong-cap' });
+  for (let attempt = 0; attempt < MAX_PHRASE_ATTEMPTS; attempt += 1) {
+    const take = planCoachTurn({
+      session: wrong,
+      turn: { frames: variedPitch(), tooNoisy: false, hopVoicedMs: 900 },
+      heard: '駅に行きます。',
+      goal,
+      at: 6_000 + attempt
+    });
+    if (attempt < MAX_PHRASE_ATTEMPTS - 1) {
+      assert.equal(take.follow, lines[0]);
+      assert.equal(wrong.prompt(), lines[0]);
+    }
+  }
+  assert.equal(wrong.prompt(), lines[1]);
+  const wrongWrap = wrong.finalEntry(6_500);
+  assert.equal(wrongWrap.coach.wrap.achieved, 0);
+  assert.equal(wrongWrap.coach.wrap.attempted, 1);
   const quiet = createCoachSession({ practice: 'japanese', lines, now: 6_000, id: 'quiet' });
   const unheard = planCoachTurn({
     session: quiet,

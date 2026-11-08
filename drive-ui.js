@@ -1054,6 +1054,7 @@ export function planCoachTurn({
   }
   if (judged.feedback) judged.feedback = { ...judged.feedback, text: localText, spoken: Boolean(localText) };
   const noted = coachSession.noteAnalysis(judged, { transcript: conversing ? said : (heard || prompt), at });
+  if (languageMiss && !noted.ignored) coachSession.clearAchievement();
   if (noted.ignored) {
     const afterIgnored = coachSession.status();
     // Done talking flushes into this same plan. A counted noisy retry still speaks,
