@@ -170,6 +170,20 @@ test('accounts, sessions, persistence, isolation, conflicts, and input protectio
     const talkRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
     assert.equal(talkRound.coach.mode, 'conversation');
     assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, { ...conversation, coach: { ...conversation.coach, mode: 'chat' } }] }, version: 12 }, signedIn)).status, 400);
+    const japaneseLog = {
+      ...noted,
+      id: 'coach-ja',
+      coach: {
+        ...noted.coach,
+        mode: 'japanese',
+        summary: 'Two sentences.',
+        phrases: [{ ...noted.coach.phrases[0], prompt: '水を飲みます。', transcript: '水を飲みます。' }]
+      }
+    };
+    assert.equal((await call('/api/state', 'PUT', { state: { ...enriched, driveLog: [driveEntry, japaneseLog] }, version: 12 }, signedIn)).status, 200);
+    const japaneseRound = (await (await call('/api/state', 'GET', undefined, signedIn)).json()).state.driveLog[1];
+    assert.equal(japaneseRound.coach.mode, 'japanese');
+    assert.equal(japaneseRound.coach.phrases[0].prompt, '水を飲みます。');
     const marked = {
       ...noted,
       coach: { ...noted.coach, wrap: { ...noted.coach.wrap, notes: [{ phrase: 'morning', issue: 'low', detail: 'bad <b>', delta: '1' }] } }

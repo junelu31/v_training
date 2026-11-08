@@ -104,6 +104,8 @@
       .coach-kicker { letter-spacing: .16em; font-size: 13px; margin: 0; color: #e7b5a4; }
       .coach-overlay h1 { font-size: clamp(40px, 8vw, 84px); line-height: 1.05; margin: 0; font-weight: 650; }
       .coach-sub, .coach-guide { font-size: clamp(18px, 3vw, 28px); line-height: 1.35; margin: 0; max-width: 18em; }
+      .coach-overlay h1.coach-line-jp { font-size: clamp(32px, 6vw, 64px); line-height: 1.2; }
+      .coach-meaning { font-size: clamp(18px, 2.8vw, 26px); line-height: 1.35; margin: 0; max-width: 22em; color: #d9d0c4; }
       .coach-guide { color: #c9c0b4; font-size: 16px; }
       .coach-commands { margin-top: auto; max-width: 36em; font-size: 14px; line-height: 1.45; color: #a89f93; }
       .coach-resume { min-height: 72px; font-size: 24px; }
@@ -121,6 +123,7 @@
 #driveLengthLabel{margin:28px 0 0}
 #driveView .drive-duration{margin-top:8px}
 .drive-voice{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0 0}
+.drive-modes{grid-template-columns:repeat(3,minmax(0,1fr))}
 .drive-voice button{min-height:76px;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:#fff;text-align:left}
 .drive-voice button b{display:block;font-size:18px}
 .drive-voice button small{display:block;margin-top:4px;color:var(--muted);font-size:13px;line-height:1.35}
@@ -130,7 +133,7 @@
 .coach-end{min-height:64px;width:min(100%,28rem);padding:14px 18px;font-size:20px;flex-shrink:0;border-radius:12px;border:1px solid #a89f93;background:transparent;color:#f6f1e8}
 .coach-progress{margin:0;min-height:1.3em;font-size:16px;letter-spacing:.04em;color:#e7b5a4}
 .coach-problems{margin:0;white-space:pre-wrap;font-size:20px;line-height:1.45;max-width:28rem}
-@media(max-width:700px){.drive-voice{grid-template-columns:1fr}}
+@media(max-width:700px){.drive-voice,.drive-modes{grid-template-columns:1fr}}
 .history-play{display:inline-block;margin-top:6px}
 .history-row{align-items:start}
 .history-hard{margin:8px 0 0;font-size:16px;line-height:1.45;color:var(--ink)}
